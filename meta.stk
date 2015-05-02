@@ -1,0 +1,797 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: meta.stk 1.1.1.1 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+;; Changes to this file were contributed by Max Hailperin <max@gac.edu>
+;; on Oct 2, 1995.  This is his description of the improvement.
+
+;;    I have modified your meta-circular evaluator (meta.stk)
+;;    to be properly tail-recursive.  Thus, in particular,
+;;    iterative processes stay out at the outer nesting
+;;    level, rather than indenting in further and further the
+;;    way recursive processes do and then unwinding back out.
+;;    Thus the modified EnvDraw correctly shows students the
+;;    difference between iteration and recursion, i.e.
+;;    between reduction to a simpler problem with the same
+;;    answer vs. spawning off a subproblem.
+
+;;    The metacircular evaluator was made properly tail-
+;;    recursive.  This was done (somewhat kludgely) by
+;;    stripping out the (after-eval ...) in view-eval and
+;;    replacing it by individual (after-eval ...) wrappings
+;;    around those evaluation cases that don't *reduce* to
+;;    another evaluation producing the same answer.  The
+;;    cases that *do* reduce were preceded by a (reduce) call
+;;    that pops the evaluation stack and decrements the
+;;    indentation level.  Some changes were needed to the
+;;    handling of the AND and OR special forms to accomodate
+;;    the tail-recursiveness as well (the last form needs to
+;;    be treated specially, like in a sequence); while I was
+;;    at it I fixed the return value of the AND and OR forms
+;;    to be the constituent expresion's non-false value where
+;;    appropriate, instead of being always #t when not #f.
+;;    The point of making this meta-circular evaluator tail
+;;    recursive isn't so much to save on space as to give an
+;;    accurate depiction of the evaluation process; an
+;;    evaulation that generates an iterative process
+;;    shouldn't indent deeper and deeper each iteration and
+;;    then unwind back out.
+
+;;    Max Hailperin
+;;    Assistant Professor of Computer Science
+;;    Gustavus Adolphus College
+;;    800 W. College Ave.
+;;    St. Peter, MN 56082
+;;    USA
+;;    http://www.gac.edu/~max
+
+(unless (provided? "meta")
+
+(require "view")
+(require "env-toplev")
+(require "env-classes")
+(require "stacks")
+(require "environments")
+
+;; view.stk has already been loaded, so the redefined command set! must
+;; be set back to normal because the metaevaluator handles symbol bindings
+;; now.  set-car! and set-cdr! remain the same though.
+(stk::set! set! stk::set!)
+(stk::set! define stk::define)
+;; set the size of cells a little smaller
+(set-scale! 15)
+(set-cell-size! 15)
+;; this is the size of the visible canvas, the window will be slightly taller
+(define ENV_INITSIZE "700x850")
+
+;; this variable tells it whether to catch errors or not.  #t means don't
+;; catch errors.
+(define *meta-debug*
+  (begin (catch this-causes-an-error)  ;; signal an error
+	 (catch *last-error-message*)));; see if *last-error-message* got set
+
+(set! *view-root* #f)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;               DRIVER-LOOP and EXTERNAL REPRESENTATIONS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; the procedure (VIEWED-REP OBJECT) formats the meta-circular object
+;; into the viewable form.  this is neccessary because many of the
+;; data types used by the metacircular evaluator have been expanded
+;; to store extra data and therefore the normal printed representation
+;; is not adequate.  There are special internal representations for
+;; special forms, external bindings (including primitives and other
+;; constants in the underlying scheme), continuations, compound
+;; procedures.  For the details of these representations see their
+;; constructors further down in this file.
+(define (viewed-rep object)
+  (cond ((compound-procedure? object)
+	 (let* ((po (procedure-object object))
+		(f  (frame-of po)))
+	   (format #f "#[compound-procedure ~A ~A]"
+		   (cons 'lambda (cdr (procedure-text object)))
+		   (environment-name (environment-of f)))))
+	((special-form? object)
+	 (format #f "#[special-form ~A]" (special-form-type object)))
+	((view-continuation? object)
+	 (format #f "#[continuation #~A]" (continuation-id object)))
+	((external-binding? object)
+	 (let ((val (external-value object))
+	       (var (external-symbol object)))
+	   (cond ((or (self-evaluating? val)
+		      (pair? val)
+		      (symbol? val))
+		  val)
+		 (else (format #f "#[primitive ~A]" var)))))
+	((list? object) (format #f "~a" (map viewed-rep object)))
+	((pair? object) object)
+	(else (format #f "~A" object))))
+
+;; (VIEWABLE-PAIR? OBJ) tests whether a given object is really a scheme
+;; data cons cell or if it is just some other representation which happens
+;; to use a cell.
+(define (viewable-pair? obj)
+  (and (pair? obj)
+       (not (or (compound-procedure? obj)
+		(view-continuation? obj)
+		(special-form? obj)
+		(and (external-binding? obj)
+		     (not (pair? (external-value obj))))))))
+
+;; These procedures, USER-DISPLAY, USER-PRINT, META-LOAD, ENV-EXIT, and
+;; ENV-STACKTRACE are bound to display, print, load, stacktrace, and
+;; exit in the meta-evaluator.
+(define (user-display object)
+  (format #t "~A" (viewed-rep object)))
+
+(define (user-print object)
+  (user-display object)
+  (newline))
+
+(define (meta-load fn)
+  (let ((chan (open-input-file fn)))
+    (define (loader)
+      (let ((exp (read chan)))
+	(if (eof-object? exp)
+	    'loaded
+	    (begin (view-eval exp the-global-environment)
+		   (loader)))))
+    (loader)
+    (close-input-port chan)))
+
+;; (define (env-stacktrace)
+;;   (let ((stack (stack->list last-error-stack)))
+;;     (let loop ((stack stack)
+;; 	       (lines 6))
+;;       (if (not (or (null? stack) (= 0 lines)))
+;; 	  (begin (print (car stack))
+;; 		 (loop (cdr stack) (- lines 1)))))))
+
+(define (env-exit)
+  (remove! *view-root* *toplevel-views*)
+  (safe-destroy *view-root*)
+  (display "Bye.")
+  (newline)
+  (exit))
+
+;; Bug:  I think this has to do with tk:destroy, but on the second or
+;; third time you exit the meta-circular evaluator loop it will hang
+;; on destroy.  I have no idea why.  It also might be the continuation
+;; pissing it off.  Its unpredictable.  Fix is to leave STk after exiting.
+
+;; note, external bindings are represented specially, so bindings have
+;; to be added as shown below.  lookup-variable-value returns an external
+;; binding in all of these cases, since initial-env is empty.
+;; Each call to define-variable! during setup has an additional extra
+;; argument saying not to record it as a symbol in the global environment,
+;; in effect making the over-riden bindings and special forms "primitive"
+;; to the meta-evaluator.
+(define (setup-environment)
+  (let ((initial-env (make-global-environment)))
+    ;; the frame-object of an environment is the tmci widget for the
+    ;; frame, it must have parent #t so that nothing attempts to add
+    ;; its children, this is just the convention saying there are no
+    ;; more parents.
+    (define-variable! 'load
+      (lookup-variable-value 'meta-load initial-env 'load)
+      initial-env #f)
+    (define-variable! 'print
+      (lookup-variable-value 'user-print initial-env 'print)
+      initial-env #f)
+    (define-variable! 'display
+      (lookup-variable-value 'user-display initial-env 'display)
+      initial-env #f)
+;;     (define-variable! 'stacktrace
+;;       (lookup-variable-value 'env-stacktrace initial-env 'stacktrace)
+;;       initial-env #f)
+    (define-variable! 'exit
+      (lookup-variable-value 'env-exit initial-env 'exit)
+      initial-env #f)
+    (define-variable! 'quit
+      (lookup-variable-value 'env-exit initial-env 'exit)
+      initial-env #f)
+;;     (define-variable! 'call/cc
+;;       (lookup-variable-value 'view-call/cc initial-env 'call/cc)
+;;       initial-env #f)
+;;     (define-variable! 'call-with-current-continuation
+;;       (lookup-variable-value 'view-call/cc initial-env 'call/cc)
+;;       initial-env #f)
+    (define-special-forms! initial-env)
+    initial-env))
+
+(define (make-global-environment)
+  ;; args to extend environment in this case distinguish this environment
+  ;; as the global environment, giving it a special name.
+  (let* ((env (extend-environment '() '() '() :name "GLOBAL ENVIRONMENT"
+				  :height INITIAL_ENV_HEIGHT
+				  :width INITIAL_ENV_WIDTH))
+	 (fo (frame-object env)))
+    (add-to-tmci-group fo (make <text-item>
+			  :parent (canvas-of *view-root*)
+			  :text "[other bindings]"
+			  :anchor "w"
+			  :coords (+ (coords-of fo)
+				     (list 5 (insertion-point-of fo)))
+			  :font MEDIUM_FONT))
+    (slot-set! fo 'inspt (+ MEDIUM_FONT_HEIGHT (insertion-point-of fo)))
+    env))
+
+;; This is the representation of special forms being created, it is a list
+;; of the form '(special-form SPECIAL_FORM_NAME), the valid special form
+;; names are held in the list special-forms-list.
+(define (define-special-forms! env)
+  (for-each
+   (lambda (x)
+     (define-variable! x (list 'special-form x) env #f))
+   special-forms-list)
+  (define-variable! 'sequence
+    '(special-form begin) env #f))
+
+(define special-forms-list
+  '(quote define set! lambda cond if let let* and or begin eval apply))
+
+;; the global enviornment, where view-eval begins each repl loop.
+(define the-global-environment '())
+;; this contains a stack of arguments to view-eval, so that in the event
+;; of an error a stacktrace can be given.
+(define the-eval-stack (make <stack>))
+;; this is a copy of the eval stack made when an error occurs.
+(define last-error-stack (make <stack>))
+;; this stores the current eval trace indent level
+(define *eval-indent-level* 0)
+;; this variable names the next environment to be created.
+(define *next-environment-number* 1)
+
+;; (ENVDRAW) initializes the meta-evaluator and puts it into the repl loop.
+(define (envdraw)
+  (if *view-root*
+      'Sorry
+      (begin
+	(set! *view-root* (make <env-toplevel>))
+	(set! the-global-environment (setup-environment))
+	(set! *next-environment-number* 1)
+	(if *meta-debug*
+	    (driver-loop)
+	    (let loop ()
+	      (when (catch (driver-loop)) ;; so that ^C will bring user back to the
+		(display "*** Error: Control-C Interupt\n") ;; env prompt
+		(write-to-listbox "*** Error: Control-C Interupt\n")
+		(loop)))))))
+
+;; this actually uses a feature I added to the STk interpreter.  The reason
+;; is that catch completely ignores errors while I wanted to get the messages,
+;; so, I added two toplevel bindings which are set in the event of an error,
+;; regardless of whether the error is cought or not.  The patch is to error.c
+(define (env-error)
+  (set! last-error-stack (copy the-eval-stack))
+  (let ((error-string (format #f "*** Error: ~A~A"
+			      *last-error-message*
+			      (if (null? *last-error-arg*)
+				  ""
+				  (format #f ": ~A" *last-error-arg*)))))
+    (format (current-error-port) "~A\nIn context:\n" error-string)
+    ;;(env-stacktrace)
+    (write-to-listbox error-string)))
+
+(define (prompt p) (display p) (flush))
+(define (begin-loop)
+  (prompt "EnvDraw> ")
+  (empty! the-eval-stack)
+  (write-to-listbox "")
+  (set! *eval-indent-level* 0)
+  (set! view:continue (not view:use-stepping?)))
+
+(define (driver-loop)
+  (begin-loop)
+  (let ((input (read)))
+    (cond ((eof-object? input)
+	   (env-exit))
+	  (else
+	   (if *meta-debug*
+	       (user-print (view-eval input the-global-environment))
+	       (if (catch (user-print (view-eval input the-global-environment))
+)
+		   (env-error)))
+	   (gc-view *view-root*)
+	   (driver-loop)))))
+
+;; wait-for-confirmation takes a format string and additional arguments
+;; and will halt the meta-evaluator and wait for either of two buttons
+;; to be pressed.  [STEP] will step past this wait-for-continue and tell
+;; it to stop at the next.  [CONTINUE] will tell it to continue the rest
+;; of this repl without stopping.  The stopping is implemented using
+;; tk-wait, which is certainly the cleanest way to do this except it
+;; does not allow for key'd continue or step instructions.  tk-wait
+;; merely pauses things until the value of a variable, in this case
+;; the variable CONFIRMATION, changes.
+
+(define-macro (wait-for-confirmation . args)
+  `(unless view:continue
+     (write-to-listbox
+      (format #f
+              (string-append (n-spaces (max 0 (- *eval-indent-level* 2)))
+                             "*** "
+                             ,(car args))
+              ,@(cdr args)))
+     (tkwait 'variable 'view:confirmation)))
+;; (define-macro (wait-for-confirmation . args)
+;;   `(unless view:continue
+;;      (write-to-listbox
+;;       (format #f
+;; 	      (string-append (n-spaces *eval-indent-level*) "*** " ,(car args))
+;; 	      ,@(cdr args)))
+;;      (tkwait 'variable 'view:confirmation)))
+
+(define view:confirmation #f)
+(define view:continue #f)
+(define view:use-stepping? #f)
+
+;; these three procedures are bound to the Tk buttons [STEP], [CONTINUE]
+;; and [STEPPING]
+(define (env-continue)
+  (env-step)
+  (set! view:continue #t))
+
+(define (env-step)
+  (set! view:confirmation (not view:confirmation)))
+
+(define (env-toggle-use-step)
+  (set! view:continue view:use-stepping?)
+  (set! view:use-stepping? (not view:use-stepping?)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                            TRACING
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; If STk had soft ports like SCM does or something similar this would
+;; be much nicer, but its not.  This writes string S to the listbox of
+;; the envdraw root window.  insert is defined for listboxes in
+;; env-toplev.stk, it automatically scrolls things.
+(define (write-to-listbox s)
+  (insert (listbox-of *view-root*) s))
+
+(define (n-spaces n)
+  (make-string n #\space))
+
+;; before-eval pushes the expression on a stack for a stacktrace on
+;; error, indents to the current indent level, prints "EVAL in
+;; ENVIRONMENT_NAME: EXPRESSION"
+(define (before-eval exp env)
+  (push the-eval-stack exp)
+  (write-to-listbox (format #f "~AEVAL in ~A: ~A"
+			    (n-spaces *eval-indent-level*)
+			    (environment-name env)
+			    (viewed-rep exp)))
+  (set! *eval-indent-level* (+ *eval-indent-level* 2)))
+
+;; similarly, after-eval pops one expression off the stack and prints
+;; "RETURNING: VALUE", also indented
+(define (after-eval ret)
+  ;(pop the-eval-stack)
+  (set! *eval-indent-level* (max 0 (- *eval-indent-level* 2)))
+  (write-to-listbox (format #f "~ARETURNING: ~A"
+			    (n-spaces *eval-indent-level*)
+			    (safen-list (viewed-rep ret))))
+  ret)
+
+;; reduce does the popping and de-indenting like after-eval, but doesn't
+;; output any value; it is to be done before continuing into an evaluation
+;; that is a *reduction* of the current evaluation rather than a *subproblem*
+;; of it -Max Hailperin <max@gac.edu> 10/2/95
+(define (reduce)
+  ;(pop the-eval-stack)
+  (set! *eval-indent-level* (max 0(- *eval-indent-level* 2))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                             EVAL
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Modified as described at top of file. Here this amounts to just
+;; having removed the (after-eval ...) from around the main dispatch
+;; cond and putting it into each of the two base cases -- self-evaluating
+;; and variable.  However, note that the other (recursive) case also
+;; winds up eventually reaching one of a large number of places where
+;; after-eval or reduce got inserted into the remainder of the code.
+;;  -Max Hailperin <max@gac.edu> 10/2/95
+(define (view-eval exp env)
+  (before-eval exp env)
+  (cond ((self-evaluating? exp) (after-eval exp))
+        ((variable? exp) (after-eval (lookup-variable-value exp env)))
+        ;; eval first checks if the expression is a symbol or
+        ;; self evaluating.
+        ((operation? exp)
+         ;; the operator is eval'd first so that if it evaluats to a
+         ;; special form it will be handled properly.
+         (let ((op (view-eval (operator exp) env)))
+           ;; once the operator is known the type of operator determines
+           ;; the action taken, special forms are looked up by
+           ;; eval-special-form, continuations are handled by calling
+           ;; a real scheme continuation.  anything else is handled by
+           ;; view-eval
+           (if (special-form? op)
+               (eval-special-form op (operands exp) env)
+               (view-apply op (list-of-values (operands exp) env)))))
+        (else (error "Unknown expression type -- eval ~A" exp))))
+
+(define (list-of-values exps env)
+  (cond ((no-operands? exps) '())
+        (else (cons (view-eval (first-operand exps) env)
+                    (list-of-values (rest-operands exps)
+                                    env)))))
+
+(define eval-expression cadr)
+(define operands cdr)
+(define operator car)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                            APPLY
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Apply uses lazy transformation of the external-bindings to real scheme
+;; values only when a primitive procedure is called, otherwise they are
+;; kept in a form which keeps track of the symbol name so that primitives
+;; can be identified by their symbol name and not something like
+;; #[closure a84f123].  The viewed-rep of external bindings depends on
+;; whether it is a procedure or not.
+(define (view-apply procedure arguments)
+  (cond ((view-continuation? procedure)
+	 ;; to call a continuation, first set the indent level
+	 ;; and eval stack to what they were when the continuation
+	 ;; was created.
+	 (set! the-eval-stack (continuation-stack procedure))
+	 (set! *eval-indent-level* (continuation-indent-level procedure))
+	 (write-to-listbox "*** Throwing continuation")
+	 (set-car! (cdr procedure) (copy the-eval-stack))
+	 ((continuation-continuation procedure) (car arguments)))
+	((primitive-procedure? (lazy-deextern procedure))
+	 (wait-for-confirmation "APPLY primitive procedure ~A args: ~A."
+				(external-symbol procedure)
+				(map (lambda (x)
+				       (viewed-rep (safen-list x)))
+				     arguments))
+	 (after-eval ; added 10/2/95 Max Hailperin <max@gac.edu>
+          (apply (lazy-deextern procedure) (map lazy-deextern arguments))))
+	((compound-procedure? procedure)
+	 (let* ((apply-env (procedure-environment procedure)))
+	   (wait-for-confirmation
+	    "APPLY ~A args: ~A, making new ~A."
+	    (viewed-rep procedure)
+	    (map (lambda (x) (viewed-rep (safen-list x))) arguments)
+	    (string-append "E" (number->string *next-environment-number*)))
+	   (eval-sequence (env-procedure-body procedure)
+			  (extend-environment
+			   (parameters procedure)
+			   arguments
+			   apply-env))))
+	(else (error "Unknown procedure type -- apply ~A" procedure))))
+
+(define (lazy-deextern x)
+  (if (external-binding? x)
+      (external-value x)
+      x))
+
+(define (compound-procedure? proc)
+  (if (atom? proc)
+      #f
+      (procedure-object? (procedure-object proc))))
+
+(define primitive-procedure? procedure?)
+(define procedure-object car)
+(define parameters cadadr)
+(define env-procedure-body cddadr)
+(define procedure-environment caddr)
+(define no-operands? null?)
+(define first-operand car)
+(define rest-operands cdr)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                           OTHER STUFF
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; The first four special forms never result in a reduction, so I put
+;; the (after-eval ...) wrapping here, rather than in their specialized
+;; evaluator procedures.  This was motivated in large part by the fact
+;; that quotations don't really have an eval-quotation; text-of-quotation
+;; is supposed to be a syntactic selector, not an evaluator.  Similarly,
+;; make-procedure is really constructor, not an evaluator.
+;; An argument could be made for putting the wrapping in eval-xxx (e.g.
+;; eval-definition) instead, however, adding eval-quotation and eval-lambda.
+;; In any case, for the remaining special forms, where reductions are the
+;; norm, I leave the call to (reduce) or (after-eval ...) to the specialized
+;; evaluator. -Max Hailperin <max@gac.edu> 10/2/95
+(define (eval-special-form op args env)
+  (let ((exp (cons op args)))
+    (case (special-form-type op)
+      (quote (after-eval (text-of-quotation exp)))
+      (define (after-eval (eval-definition exp env)))
+      (set! (after-eval (eval-assignment exp env)))
+      (lambda (after-eval (make-procedure exp env)))
+      (cond (eval-cond (clauses exp) env))
+      (if (eval-if exp env))
+      (let (eval-let exp env))
+      (let* (eval-let* exp env))
+      (and (eval-and (predicates exp) env))
+      (or (eval-or (predicates exp) env))
+      (begin (eval-sequence (rest-exps exp) env))
+      (eval (view-eval (eval-expression exp) env))
+      (apply (eval-apply exp env))
+      ;;(call/cc (eval-call/cc exp env))
+      (else (error "Unknown special form -- ~A" op)))))
+
+(define special-form-type cadr)
+
+(define (make-eval-predicate sym)
+  (lambda (exp)
+    (if (atom? exp)
+	#f
+	(equal? (car exp) sym))))
+
+;;
+
+(define text-of-quotation cadr)
+
+;;
+
+(define (lookup-variable-value var env . name)
+  (let ((b (binding-in-env var env)))
+    (if (found-binding? b)
+        (binding-value b)
+	(list 'external-binding (if (null? name) var (car name)) (eval var)))))
+
+(define external-value caddr)
+(define external-symbol cadr)
+(define external-binding? (make-eval-predicate 'external-binding))
+
+;;
+
+(define (eval-definition exp env)
+  (define-variable! (definition-variable exp)
+    (view-eval (definition-value exp) env)
+    env)
+  (definition-variable exp))
+
+(define (definition-variable exp)
+  (if (variable? (cadr exp))
+      (cadr exp)
+      (caadr exp)))
+
+(define (definition-value exp)
+  (if (variable? (cadr exp))
+      (caddr exp)
+      (cons 'lambda
+            (cons (cdadr exp)
+                  (cddr exp)))))
+
+;;
+
+(define (eval-assignment exp env)
+  (let ((new-value (view-eval (assignment-value exp) env)))
+    (set-variable-value! (assignment-variable exp)
+                         new-value
+                         env)
+    new-value))
+
+(define assignment-variable cadr)
+(define assignment-value caddr)
+
+;;
+
+(define (make-procedure lambda-exp env)
+  (let ((it (list (make <procedure-object>
+			:parent (canvas-of *view-root*)
+			:proc lambda-exp
+			:frame (frame-object env)
+			:coords '(0 0))
+		  lambda-exp env)))
+    (bind-for-entrance (procedure-object it) *view-root* it)
+    (place-new-widget (procedure-object it) *view-root*)
+    it))
+
+(define procedure-text cadr)
+
+;;
+
+;; I added the after-eval to the oddball case of a cond that runs off
+;; the end returning #f. -Max Hailperin <max@gac.edu> 10/2/95
+(define (eval-cond clist env)
+  (cond ((no-clauses? clist) (after-eval #f))
+        ((else-clause? (first-clause clist))
+         (eval-sequence (actions (first-clause clist)) env))
+        ((view-eval (predicate (first-clause clist)) env)
+         (eval-sequence (actions (first-clause clist)) env))
+        (else (eval-cond (rest-clauses clist) env))))
+
+(define (else-clause? clause)
+  (eq? (predicate clause) 'else))
+
+(define predicate car)
+(define clauses cdr)
+(define no-clauses? null?)
+(define first-clause car)
+(define rest-clauses cdr)
+(define actions cdr)
+
+;;
+
+;; I put in the (reduce) before each of the normal outcomes -- evaluating
+;; the consequent or alternative -- since they each provide as their value
+;; the value of the whole if.  However, as with cond running of the end, there
+;; is the possibility of an if with a false predicate and no alternative.
+;; Here the prior version of eval-if used exactly this kind of an if in
+;; the implementation so that the underlying scheme's undefined value was
+;; returned; here I replicated that with the (if #f #f) inside the after-eval.
+;; -Max Hailperin <max@gac.edu> 10/2/95
+(define (eval-if exp env)
+  (if (null? (cdr exp))
+      (error "Empty IF statement")
+      (if (view-eval (cadr exp) env)
+	  (if (null? (cddr exp))
+	      (error "Not enough IF clauses")
+	      (begin (reduce)
+                     (view-eval (caddr exp) env)))
+	  (if (not (null? (cdddr exp)))
+	      (begin (reduce)
+                     (view-eval (cadddr exp) env))
+              (after-eval (if #f #f))))))  ; return the right undefined value
+
+;;
+
+;; Evaluating a let as an application is a reduction.
+;;  -Max Hailperin <max@gac.edu> 10/2/95
+(define (eval-let exp env)
+  (cond ((null? (cdr exp))
+	 (error "Empty LET statement"))
+	((null? (cddr exp))
+	 (error "No LET body"))
+	(else #t))
+  (let ((bindings (cadr exp))
+	(body (cddr exp)))
+    (reduce)
+    (view-eval (cons (cons 'lambda (cons (map car bindings) body))
+		     (map cadr bindings))
+	       env)))
+
+;;
+
+;; Evaluating a let* as an application is a reduction.
+;;  -Max Hailperin <max@gac.edu> 10/2/95
+(define (eval-let* exp env)
+  (cond ((null? (cdr exp))
+	 (error "Empty LET* statement"))
+	((null? (cddr exp))
+	 (error "No LET* body"))
+	(else #t))
+  (let ((bindings (cadr exp))
+	(body (cddr exp)))
+    (reduce)
+    (if (null? (cdr bindings))
+	(view-eval (cons (cons 'lambda (cons (map car bindings) body))
+			 (map cadr bindings))
+		   env)
+	(view-eval (cons (cons 'lambda
+			       (cons (list (caar bindings))
+				     (list (cons 'let*
+						 (cons (cdr bindings)
+						       body)))))
+
+			 (list (cadar bindings)))
+		   env))))
+
+;;
+
+;; This had to be modified a fair bit to not only get the after-eval and
+;; reduce in to the right places, but moreover special-case a list of
+;; one predicate (as with eval-sequence) to get proper tail-recursive
+;; behavior. As a side-effect, I fixed it to return true values other than #t.
+;; -Max Hailperin <max@gac.edu> 10/2/95
+(define (eval-and predicates env)
+  (cond ((null? predicates) (after-eval #t))
+        ((null? (cdr predicates))
+         (reduce)
+         (view-eval (car predicates) env))
+        ((not (view-eval (car predicates) env)) (after-eval #f))
+        (else (eval-and (cdr predicates) env))))
+
+(define predicates cdr)
+
+;;
+
+;; This had to be modified a fair bit to not only get the after-eval and
+;; reduce in to the right places, but moreover special-case a list of
+;; one predicate (as with eval-sequence) to get proper tail-recursive
+;; behavior. Unlike with eval-and, getting non-#t true values didn't
+;; come quite for free with this one -- but I went ahead and did it.
+;; With the => notation it wasn't hard, and it's what R4RS says.
+;; -Max Hailperin <max@gac.edu> 10/2/95
+;; I don't like the => notation, I'm changing it back -- josh 10/28/95
+(define (eval-or predicates env)
+  (cond ((null? predicates) (after-eval #f))
+        ((null? (cdr predicates))
+         (reduce)
+         (view-eval (car predicates) env))
+;;        ((view-eval (car predicates) env) => after-eval)
+	((let ((val (view-eval (car predicates) env)))
+	   (if val (after-eval val) #f)))
+        (else (eval-or (cdr predicates) env))))
+
+;;
+
+;; The last-exp case here is the most obvious of the places where
+;; (reduce) is needed to get proper tail recursiveness.
+;; -Max Hailperin <max@gac.edu> 10/2/95
+(define (eval-sequence exps env)
+  (cond ((last-exp? exps) (reduce) (view-eval (first-exp exps) env))
+        (else (view-eval (first-exp exps) env)
+              (eval-sequence (rest-exps exps) env))))
+
+(define (last-exp? seq) (null? (cdr seq)))
+(define first-exp car)
+(define rest-exps cdr)
+
+;;
+
+(define (eval-apply exp env)
+  (view-apply (view-eval (cadr exp) env)
+	      (let loop ((args (cddr exp)))
+		(cond ((null? args) '())
+		      ((null? (cdr args))
+		       (map (lambda (x) (view-eval x env))
+			    (view-eval (car args) env)))
+		      (else
+		       (cons (view-eval (car args) env) (loop (cdr args))))))))
+
+;;
+
+(define (view-call/cc proc)
+  (call/cc
+   (lambda (k)
+     (view-apply proc (list (make-view-continuation k))))))
+
+(define make-view-continuation
+  (let ((id 0))
+    (lambda (c)
+      (set! id (+ 1 id))
+      (list 'continuation
+	    (copy the-eval-stack)
+	    *eval-indent-level*
+	    c
+	    id))))
+
+(define view-continuation? (make-eval-predicate 'continuation))
+(define continuation-stack cadr)
+(define continuation-indent-level caddr)
+(define continuation-continuation cadddr)
+(define (continuation-id x) (cadddr (cdr x)))
+
+;; the predicates
+
+(define (self-evaluating? exp)
+  (or (null? exp)
+      (number? exp)
+      (boolean? exp)
+      (keyword? exp)
+      (vector? exp)
+      (char? exp)
+      (string? exp)))
+
+(define variable? symbol?)
+(define operation? pair?)
+
+(define special-form? (make-eval-predicate 'special-form))
+
+(provide "meta")
+
+)

@@ -1,0 +1,511 @@
+%!PS-Adobe-3.0 EPSF-3.0
+%%Creator: Tk Canvas Widget
+%%For: Josh MacDonald,,,
+%%Title: Window .v1.v2.v11
+%%CreationDate: Sun Sep  3 04:27:38 1995
+%%BoundingBox: 145 293 468 499
+%%Pages: 1
+%%DocumentData: Clean7Bit
+%%Orientation: Portrait
+%%DocumentNeededResources: font Fixed
+%%EndComments
+
+% This file contains the standard Postscript prolog used when
+% generating Postscript from canvas widgets.
+%
+% $Header: /amd/nfs/cory/home/hearst/users/jmacd/lib/stk/2.1.7/STk/RCS/prolog.ps,v 1.1 1995/07/24 20:00:59 jmacd Exp jmacd $ SPRITE (Berkeley);
+
+%%BeginProlog
+50 dict begin
+
+% The definitions below just define all of the variables used in
+% any of the procedures here.  This is needed for obscure reasons
+% explained on p. 716 of the Postscript manual (Section H.2.7,
+% "Initializing Variables," in the section on Encapsulated Postscript).
+
+/baseline 0 def
+/stipimage 0 def
+/height 0 def
+/justify 0 def
+/maxwidth 0 def
+/spacing 0 def
+/stipple 0 def
+/strings 0 def
+/xoffset 0 def
+/yoffset 0 def
+/tmpstip null def
+/encoding {ISOLatin1Encoding} def
+
+% Override setfont to automatically encode the font in the style defined by 
+% by 'encoding' (ISO Latin1 by default).
+
+systemdict /encodefont known {
+    /realsetfont /setfont load def
+    /setfont {
+	encoding encodefont realsetfont
+    } def
+} if
+
+% desiredSize EvenPixels closestSize
+%
+% The procedure below is used for stippling.  Given the optimal size
+% of a dot in a stipple pattern in the current user coordinate system,
+% compute the closest size that is an exact multiple of the device's
+% pixel size.  This allows stipple patterns to be displayed without
+% aliasing effects.
+
+/EvenPixels {
+    % Compute exact number of device pixels per stipple dot.
+    dup 0 matrix currentmatrix dtransform
+    dup mul exch dup mul add sqrt
+
+    % Round to an integer, make sure the number is at least 1, and compute
+    % user coord distance corresponding to this.
+    dup round dup 1 lt {pop 1} if
+    exch div mul
+} bind def
+
+% width height string filled StippleFill --
+%
+% Given a path and other graphics information already set up, this
+% procedure will fill the current path in a stippled fashion.  "String"
+% contains a proper image description of the stipple pattern and
+% "width" and "height" give its dimensions.  If "filled" is true then
+% it means that the area to be stippled is gotten by filling the
+% current path (e.g. the interior of a polygon); if it's false, the
+% area is gotten by stroking the current path (e.g. a wide line).
+% Each stipple dot is assumed to be about one unit across in the
+% current user coordinate system.
+
+/StippleFill {
+    % Turn the path into a clip region that we can then cover with
+    % lots of images corresponding to the stipple pattern.  Warning:
+    % some Postscript interpreters get errors during strokepath for
+    % dashed lines.  If this happens, turn off dashes and try again.
+
+    1 index /tmpstip exch def %% Works around NeWSprint bug
+
+    gsave
+    {eoclip}
+    {{strokepath} stopped {grestore gsave [] 0 setdash strokepath} if clip}
+    ifelse
+
+    % Change the scaling so that one user unit in user coordinates
+    % corresponds to the size of one stipple dot.
+    1 EvenPixels dup scale
+
+    % Compute the bounding box occupied by the path (which is now
+    % the clipping region), and round the lower coordinates down
+    % to the nearest starting point for the stipple pattern.
+
+    pathbbox
+    4 2 roll
+    5 index div cvi 5 index mul 4 1 roll
+    6 index div cvi 6 index mul 3 2 roll
+
+    % Stack now: width height string y1 y2 x1 x2
+    % Below is a doubly-nested for loop to iterate across this area
+    % in units of the stipple pattern size, going up columns then
+    % across rows, blasting out a stipple-pattern-sized rectangle at
+    % each position
+
+    6 index exch {
+	2 index 5 index 3 index {
+	    % Stack now: width height string y1 y2 x y
+
+	    gsave
+	    1 index exch translate
+	    5 index 5 index true matrix tmpstip imagemask
+	    grestore
+	} for
+	pop
+    } for
+    pop pop pop pop pop
+    grestore
+    newpath
+} bind def
+
+% -- AdjustColor --
+% Given a color value already set for output by the caller, adjusts
+% that value to a grayscale or mono value if requested by the CL
+% variable.
+
+/AdjustColor {
+    CL 2 lt {
+	currentgray
+	CL 0 eq {
+	    .5 lt {0} {1} ifelse
+	} if
+	setgray
+    } if
+} bind def
+
+% x y strings spacing xoffset yoffset justify stipple stipimage DrawText --
+% This procedure does all of the real work of drawing text.  The
+% color and font must already have been set by the caller, and the
+% following arguments must be on the stack:
+%
+% x, y -	Coordinates at which to draw text.
+% strings -	An array of strings, one for each line of the text item,
+%		in order from top to bottom.
+% spacing -	Spacing between lines.
+% xoffset -	Horizontal offset for text bbox relative to x and y: 0 for
+%		nw/w/sw anchor, -0.5 for n/center/s, and -1.0 for ne/e/se.
+% yoffset -	Vertical offset for text bbox relative to x and y: 0 for
+%		nw/n/ne anchor, +0.5 for w/center/e, and +1.0 for sw/s/se.
+% justify -	0 for left justification, 0.5 for center, 1 for right justify.
+% stipple -	Boolean value indicating whether or not text is to be
+%		drawn in stippled fashion.
+% stipimage -	Image for stippling, if stipple is True.
+%
+% Also, when this procedure is invoked, the color and font must already
+% have been set for the text.
+
+/DrawText {
+    /stipimage exch def
+    /stipple exch def
+    /justify exch def
+    /yoffset exch def
+    /xoffset exch def
+    /spacing exch def
+    /strings exch def
+
+    % First scan through all of the text to find the widest line.
+
+    /maxwidth 0 def
+    strings {
+	stringwidth pop
+	dup maxwidth gt {/maxwidth exch def} {pop} ifelse
+	newpath
+    } forall
+
+    % Compute the baseline offset and the actual font height.
+
+    0 0 moveto (TXygqPZ) false charpath
+    pathbbox dup /baseline exch def
+    exch pop exch sub /height exch def pop
+    newpath
+
+    % Translate coordinates first so that the origin is at the upper-left
+    % corner of the text's bounding box. Remember that x and y for
+    % positioning are still on the stack.
+
+    translate
+    maxwidth xoffset mul
+    strings length 1 sub spacing mul height add yoffset mul translate
+
+    % Now use the baseline and justification information to translate so
+    % that the origin is at the baseline and positioning point for the
+    % first line of text.
+
+    justify maxwidth mul baseline neg translate
+
+    % Iterate over each of the lines to output it.  For each line,
+    % compute its width again so it can be properly justified, then
+    % display it.
+
+    strings {
+	dup stringwidth pop
+	justify neg mul 0 moveto
+	show
+	0 spacing neg translate
+    } forall
+} bind def
+
+%%EndProlog
+%%BeginSetup
+/CL 2 def
+%%IncludeResource: font Fixed
+%%EndSetup
+
+%%Page: 1 1
+save
+306.0 396.0 translate
+0.8371 0.8371 scale
+-392 -122 translate
+200 245 moveto 585 245 lineto 585 0 lineto 200 0 lineto closepath clip newpath
+gsave
+348 230 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+0.898 0.898 0.898 setrgbcolor AdjustColor
+fill
+348 230 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+318 230 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+0.898 0.898 0.898 setrgbcolor AdjustColor
+fill
+318 230 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+438 230 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+0.898 0.898 0.898 setrgbcolor AdjustColor
+fill
+438 230 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+408 230 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+0.898 0.898 0.898 setrgbcolor AdjustColor
+fill
+408 230 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+528 230 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+0.898 0.898 0.898 setrgbcolor AdjustColor
+fill
+528 230 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+498 230 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+0.898 0.898 0.898 setrgbcolor AdjustColor
+fill
+498 230 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+348 170 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+0.898 0.898 0.898 setrgbcolor AdjustColor
+fill
+348 170 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+318 170 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+0.898 0.898 0.898 setrgbcolor AdjustColor
+fill
+318 170 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+423 110 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+0.898 0.898 0.898 setrgbcolor AdjustColor
+fill
+423 110 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+393 110 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+0.898 0.898 0.898 setrgbcolor AdjustColor
+fill
+393 110 moveto 30 0 rlineto 0 -30 rlineto -30 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+288 110 [
+    (left)
+] 16 -0.5 0 0 () false DrawText
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+483 50 [
+    (right)
+] 16 -0.5 0 0 () false DrawText
+grestore
+gsave
+408 95 moveto
+352.4 136.7 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.702 0.702 0.702 setrgbcolor AdjustColor
+stroke
+348 140 moveto
+353.6 130.8 lineto
+354.2 134.1 lineto
+355.4 135.7 lineto
+358.4 137.2 lineto
+348 140 lineto
+fill
+grestore
+gsave
+438 95 moveto
+479.110912703474 53.889087296526 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.702 0.702 0.702 setrgbcolor AdjustColor
+stroke
+483 50 moveto
+478.757359312881 59.8994949366116 lineto
+477.696699141101 56.7175144212722 lineto
+476.282485578728 55.3033008588991 lineto
+473.100505063388 54.2426406871193 lineto
+483 50 lineto
+fill
+grestore
+gsave
+333 155 moveto
+291.889087296526 113.889087296526 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.702 0.702 0.702 setrgbcolor AdjustColor
+stroke
+288 110 moveto
+297.899494936612 114.242640687119 lineto
+294.717514421272 115.303300858899 lineto
+293.303300858899 116.717514421272 lineto
+292.242640687119 119.899494936612 lineto
+288 110 lineto
+fill
+grestore
+gsave
+363 155 moveto
+418.6 113.3 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.702 0.702 0.702 setrgbcolor AdjustColor
+stroke
+423 110 moveto
+417.4 119.2 lineto
+416.8 115.9 lineto
+415.6 114.3 lineto
+412.6 112.8 lineto
+423 110 lineto
+fill
+grestore
+gsave
+528 200 moveto
+558 230 lineto
+1 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+513 215 moveto
+353.306201016808 171.447145731857 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.702 0.702 0.702 setrgbcolor AdjustColor
+stroke
+348 170 moveto
+358.700107835546 168.77211877297 lineto
+356.463609886313 171.271734127995 lineto
+355.937375074729 173.201261770471 lineto
+356.595168589209 176.490229342872 lineto
+348 170 lineto
+fill
+grestore
+gsave
+423 215 moveto
+423 115.5 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.702 0.702 0.702 setrgbcolor AdjustColor
+stroke
+423 110 moveto
+427 120 lineto
+424 118.5 lineto
+422 118.5 lineto
+419 120 lineto
+423 110 lineto
+fill
+grestore
+gsave
+453 215 moveto
+492.5 215 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.702 0.702 0.702 setrgbcolor AdjustColor
+stroke
+498 215 moveto
+488 219 lineto
+489.5 216 lineto
+489.5 214 lineto
+488 211 lineto
+498 215 lineto
+fill
+grestore
+gsave
+333 215 moveto
+333 175.5 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.702 0.702 0.702 setrgbcolor AdjustColor
+stroke
+333 170 moveto
+337 180 lineto
+334 178.5 lineto
+332 178.5 lineto
+329 180 lineto
+333 170 lineto
+fill
+grestore
+gsave
+363 215 moveto
+402.5 215 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.702 0.702 0.702 setrgbcolor AdjustColor
+stroke
+408 215 moveto
+398 219 lineto
+399.5 216 lineto
+399.5 214 lineto
+398 211 lineto
+408 215 lineto
+fill
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+236.5 226 [
+    (weird)
+] 16 -0.5 0 0 () false DrawText
+grestore
+gsave
+312.5 218 moveto
+258 218 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.702 0.702 0.702 setrgbcolor AdjustColor
+stroke
+318 218 moveto
+308 222 lineto
+309.5 219 lineto
+309.5 217 lineto
+308 214 lineto
+318 218 lineto
+fill
+grestore
+restore showpage
+
+%%Trailer
+end
+%%EOF

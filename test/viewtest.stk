@@ -1,0 +1,59 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995 Josh MacDonald <jmacd@po.EECS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; Here are some sample list structures to try viewing.
+
+(define the
+  (let ((it (cons (cons 1 2) 3)))
+    (set-cdr! (car it) it)
+    (set-car! (car it) it)
+    it))
+
+(define the1
+  (let ((it (cons 1 2)))
+    (set-car! it it)
+    (set-cdr! it it)
+    it))
+
+(define the2 (cons the1 the1))
+
+(define neato
+  (let ((it (cons 1 2))
+	(it2 (cons 3 4)))
+    (set-car! it 'left)
+    (set-cdr! it it2)
+    (set-car! it2 it)
+    (set-cdr! it2 'right)
+    (list it it2 it)))
+
+(view the)
+(view the1)
+(view the2)
+(view neato)
+
+(view '((1 2) (3 4) (5 6)) (lambda (x) #t))
+(view '((1 2) (3 4) (5 6)) (lambda (x) #f))
+
+(view '((1 . 2) (3 . 4) (5 . 6)) (lambda (x) #t))
+(view '((1 . 2) (3 . 4) (5 . 6)) (lambda (x) #f))
+
+(view '((4 4 ((((4) 54(543 (5))5 54 ) 532 )((53))))) (lambda (x) #t))
+(view '((4 4 ((((4) 54(543 (5))5 54 ) 532 )((53))))) (lambda (x) #f))
+
+(view (let ((foo (cons 3 4)))
+	(cons foo foo)))
+
+(define zot (let ((foo (list 1 2 3 4 5)))
+	      (set-cdr! (cddddr foo) foo)
+	      foo))
+
+(view zot)

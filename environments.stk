@@ -1,0 +1,191 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: environments.stk 1.1.1.1 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                          ENVIRONMENTS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; this file contains the code for environment manipulation.  this code
+;; is adapted from the SICP meta-evaluator but is much different.
+
+;; FRAMES:  frames have one additional field which is stored at the front
+;; of the binding list.  Fortunatly this was a simple modification because
+;; of the selectors used, (first-frame env) skips this first element of
+;; the symbol-value alist.  The additional frame is the Tk frame widget,
+;; and stores the environment name and information about how to place new
+;; bindings.
+
+;; BINDINGS:  bindings have one additional field which stores a binding-object,
+;; a stklos class which stores information about what a binding points to and
+;; any pointers to it, its frame, etc.
+
+(unless (provided? "environments")
+
+(define (binding-in-env var env)
+  (if (no-more-frames? env)
+      #f
+      (let ((b (binding-in-frame var (first-frame env))))
+        (if (found-binding? b)
+            b
+            (binding-in-env var (rest-frames env))))))
+
+(define (extend-environment variables values base-env . args)
+  (let* ((env (adjoin-frame (make-frame variables values args base-env)
+			    base-env))
+	 (fo (frame-object env)))
+    (slot-set! fo 'environment env)
+    (for-each
+     (lambda (x) (place-binding fo (binding-object x)))
+     (first-frame env))
+    (extend-environment-pointer env)
+    env))
+
+(define (set-variable-value! var val env)
+  (let ((b (binding-in-env var env)))
+    (if (found-binding? b)
+        (set-binding-value! b val)
+        (eval `(set! ,var ,val)))))
+
+(define (define-variable! var val env . place?)
+  (let ((b (binding-in-frame var (first-frame env))))
+    (if (found-binding? b)
+	(if (equal? 'not-placed (value-widget-of (binding-object b)))
+	    (begin (set-binding-value! b val)
+		   (place-binding (frame-object env) (binding-object b)))
+	    (set-binding-value! b val))
+	(let ((binding (make-binding var val (frame-object env))))
+	  (set-first-frame! env (adjoin-binding binding (first-frame env)))
+	  (if (null? place?)
+	      (place-binding (frame-object env)
+			     (binding-object binding)))))))
+
+(define first-frame cdar)
+(define rest-frames cdr)
+(define frame-object caar)
+(define no-more-frames? null?)
+(define adjoin-frame cons)
+
+(define (set-first-frame! env new-frame)
+  (set-cdr! (car env) new-frame))
+
+(define (binding-width var val)
+  (if (or (compound-procedure? val)
+	  (viewable-pair? val))
+      (+ (text-width (safely-format var)) 25)
+      (+ (text-width (viewed-rep val))
+	 (text-width (safely-format var)) 50)))
+
+(define (make-frame variables values args parent-env)
+  ;; frames are represented as (frame-object . frames)
+  (let* ((argc ;; don't want to start drawing things if there's going to be an error
+	  (let loop ((count 0)
+		     (var variables)
+		     (val values))
+	    (cond ((and (null? var) (null? val)) count)
+		  ((null? var)
+		   (error "Too many arguments supplied ~A" values))
+		  ((atom? var) count)
+		  ((null? val)
+		   (error "Too few arguments supplied ~A" values))
+		  (else (loop (+ count 1) (cdr var) (cdr val))))))
+	 (width (apply max (cons (get-keyword :width args 100)
+				 (let loop ((vars variables)
+					    (vals values))
+				   (cond ((null? vars) '())
+					 ((atom? vars) (list (binding-width vars vals)))
+					 (else (cons (binding-width (car vars) (car vals))
+						     (loop (cdr vars) (cdr vals)))))))))
+	 (height (if (< argc 4)
+		     (get-keyword :height args 100)
+		     (+ 100 (* (- argc 4) MEDIUM_FONT_HEIGHT))))
+	 (it (make <frame-object>
+		  :parent (slot-ref *view-root* 'canv)
+		  :name (get-keyword :name args
+			   (string-append
+			    "E" (number->string *next-environment-number*)))
+		  :coords '(0 0)
+		  :width width
+		  :height height)))
+    ;; the frame has to be placed before any of its bindings get placed,
+    ;; or else, if the canvas has been dirtied before this frame is created,
+    ;; it will create the frame and place its bindings near it, at '(0 0)
+    (unless (null? parent-env)
+      (set-parent! it (frame-object parent-env)))
+    (place-new-widget it *view-root*)
+    (set-parent! it #f)
+    ;; increment the frame count
+    (if (not (get-keyword :name args #f))
+	(set! *next-environment-number*
+	      (+ 1 *next-environment-number*)))
+    (cons it
+	  (let loop ((variables variables)
+		     (values values))
+	    (cond ((and (null? variables) (null? values)) '())
+		  ((atom? variables)
+		   (list (make-binding variables values it)))
+		  (else (adjoin-binding
+			 (make-binding (car variables) (car values) it)
+			 (loop (cdr variables) (cdr values)))))))))
+
+(define (adjoin-binding binding frame)
+  (cons binding frame))
+
+(define (binding-in-frame var frame)
+  (let loop ((frame frame))
+    (cond ((null? frame) #f)
+	  ((equal? (binding-variable (first-binding frame)) var)
+	   (first-binding frame))
+	  (else (loop (rest-bindings frame))))))
+
+(define (found-binding? b) b) ;; stupid data abstraction
+
+(define (make-binding variable value frame)
+  (let ((it (list variable value 'any)))
+    (set-car! (cddr it) (make <binding-object>
+			      :frame frame
+			      :bind it))
+    it))
+
+(define first-binding car)
+(define rest-bindings cdr)
+(define binding-variable car)
+(define binding-value cadr)
+(define binding-object caddr)
+
+(define (set-binding-value! binding value)
+  (if (equal? 'not-placed (value-widget-of (binding-object binding)))
+      (set-car! (cdr binding) value)
+      (let* ((bo (binding-object binding))
+	     (fo (let ((it (frame-of bo)))
+		   (set-precise-position it) it))
+	     (old-inspt (insertion-point-of fo))
+	     (new-inspt (- (y-coord (coords-of (variable-widget-of bo)))
+			   (y-coord (coords-of fo)))))
+	(slot-set! fo 'inspt new-inspt)
+	(safe-destroy (variable-widget-of bo))
+	(delete-object (pointer-widget-of bo) (table-of *view-root*))
+	(unless (tmci-widget? (value-widget-of bo))
+	  (safe-destroy (value-widget-of bo)))
+	(set-car! (cdr binding) value)
+	(place-binding fo bo)
+	(slot-set! fo 'inspt old-inspt))))
+
+(define (environment-name env)
+  (slot-ref (frame-object env) 'name))
+
+(provide "environments")
+
+)

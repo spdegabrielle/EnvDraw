@@ -1,0 +1,1291 @@
+%!PS-Adobe-3.0 EPSF-3.0
+%%Creator: Tk Canvas Widget
+%%For: Josh MacDonald
+%%Title: Window .v1.v2.v13
+%%CreationDate: Tue Sep 19 21:13:26 1995
+%%BoundingBox: 18 223 595 569
+%%Pages: 1
+%%DocumentData: Clean7Bit
+%%Orientation: Portrait
+%%DocumentNeededResources: font Fixed
+%%+ font Helvetica-Bold
+%%EndComments
+
+% This file contains the standard Postscript prolog used when
+% generating Postscript from canvas widgets.
+%
+% $Header: /amd/nfs/cory/home/hearst/users/jmacd/lib/stk/2.1.7/STk/RCS/prolog.ps,v 1.1 1995/07/24 20:00:59 jmacd Exp jmacd $ SPRITE (Berkeley);
+
+%%BeginProlog
+50 dict begin
+
+% The definitions below just define all of the variables used in
+% any of the procedures here.  This is needed for obscure reasons
+% explained on p. 716 of the Postscript manual (Section H.2.7,
+% "Initializing Variables," in the section on Encapsulated Postscript).
+
+/baseline 0 def
+/stipimage 0 def
+/height 0 def
+/justify 0 def
+/maxwidth 0 def
+/spacing 0 def
+/stipple 0 def
+/strings 0 def
+/xoffset 0 def
+/yoffset 0 def
+/tmpstip null def
+/encoding {ISOLatin1Encoding} def
+
+% Override setfont to automatically encode the font in the style defined by 
+% by 'encoding' (ISO Latin1 by default).
+
+systemdict /encodefont known {
+    /realsetfont /setfont load def
+    /setfont {
+	encoding encodefont realsetfont
+    } def
+} if
+
+% desiredSize EvenPixels closestSize
+%
+% The procedure below is used for stippling.  Given the optimal size
+% of a dot in a stipple pattern in the current user coordinate system,
+% compute the closest size that is an exact multiple of the device's
+% pixel size.  This allows stipple patterns to be displayed without
+% aliasing effects.
+
+/EvenPixels {
+    % Compute exact number of device pixels per stipple dot.
+    dup 0 matrix currentmatrix dtransform
+    dup mul exch dup mul add sqrt
+
+    % Round to an integer, make sure the number is at least 1, and compute
+    % user coord distance corresponding to this.
+    dup round dup 1 lt {pop 1} if
+    exch div mul
+} bind def
+
+% width height string filled StippleFill --
+%
+% Given a path and other graphics information already set up, this
+% procedure will fill the current path in a stippled fashion.  "String"
+% contains a proper image description of the stipple pattern and
+% "width" and "height" give its dimensions.  If "filled" is true then
+% it means that the area to be stippled is gotten by filling the
+% current path (e.g. the interior of a polygon); if it's false, the
+% area is gotten by stroking the current path (e.g. a wide line).
+% Each stipple dot is assumed to be about one unit across in the
+% current user coordinate system.
+
+/StippleFill {
+    % Turn the path into a clip region that we can then cover with
+    % lots of images corresponding to the stipple pattern.  Warning:
+    % some Postscript interpreters get errors during strokepath for
+    % dashed lines.  If this happens, turn off dashes and try again.
+
+    1 index /tmpstip exch def %% Works around NeWSprint bug
+
+    gsave
+    {eoclip}
+    {{strokepath} stopped {grestore gsave [] 0 setdash strokepath} if clip}
+    ifelse
+
+    % Change the scaling so that one user unit in user coordinates
+    % corresponds to the size of one stipple dot.
+    1 EvenPixels dup scale
+
+    % Compute the bounding box occupied by the path (which is now
+    % the clipping region), and round the lower coordinates down
+    % to the nearest starting point for the stipple pattern.
+
+    pathbbox
+    4 2 roll
+    5 index div cvi 5 index mul 4 1 roll
+    6 index div cvi 6 index mul 3 2 roll
+
+    % Stack now: width height string y1 y2 x1 x2
+    % Below is a doubly-nested for loop to iterate across this area
+    % in units of the stipple pattern size, going up columns then
+    % across rows, blasting out a stipple-pattern-sized rectangle at
+    % each position
+
+    6 index exch {
+	2 index 5 index 3 index {
+	    % Stack now: width height string y1 y2 x y
+
+	    gsave
+	    1 index exch translate
+	    5 index 5 index true matrix tmpstip imagemask
+	    grestore
+	} for
+	pop
+    } for
+    pop pop pop pop pop
+    grestore
+    newpath
+} bind def
+
+% -- AdjustColor --
+% Given a color value already set for output by the caller, adjusts
+% that value to a grayscale or mono value if requested by the CL
+% variable.
+
+/AdjustColor {
+    CL 2 lt {
+	currentgray
+	CL 0 eq {
+	    .5 lt {0} {1} ifelse
+	} if
+	setgray
+    } if
+} bind def
+
+% x y strings spacing xoffset yoffset justify stipple stipimage DrawText --
+% This procedure does all of the real work of drawing text.  The
+% color and font must already have been set by the caller, and the
+% following arguments must be on the stack:
+%
+% x, y -	Coordinates at which to draw text.
+% strings -	An array of strings, one for each line of the text item,
+%		in order from top to bottom.
+% spacing -	Spacing between lines.
+% xoffset -	Horizontal offset for text bbox relative to x and y: 0 for
+%		nw/w/sw anchor, -0.5 for n/center/s, and -1.0 for ne/e/se.
+% yoffset -	Vertical offset for text bbox relative to x and y: 0 for
+%		nw/n/ne anchor, +0.5 for w/center/e, and +1.0 for sw/s/se.
+% justify -	0 for left justification, 0.5 for center, 1 for right justify.
+% stipple -	Boolean value indicating whether or not text is to be
+%		drawn in stippled fashion.
+% stipimage -	Image for stippling, if stipple is True.
+%
+% Also, when this procedure is invoked, the color and font must already
+% have been set for the text.
+
+/DrawText {
+    /stipimage exch def
+    /stipple exch def
+    /justify exch def
+    /yoffset exch def
+    /xoffset exch def
+    /spacing exch def
+    /strings exch def
+
+    % First scan through all of the text to find the widest line.
+
+    /maxwidth 0 def
+    strings {
+	stringwidth pop
+	dup maxwidth gt {/maxwidth exch def} {pop} ifelse
+	newpath
+    } forall
+
+    % Compute the baseline offset and the actual font height.
+
+    0 0 moveto (TXygqPZ) false charpath
+    pathbbox dup /baseline exch def
+    exch pop exch sub /height exch def pop
+    newpath
+
+    % Translate coordinates first so that the origin is at the upper-left
+    % corner of the text's bounding box. Remember that x and y for
+    % positioning are still on the stack.
+
+    translate
+    maxwidth xoffset mul
+    strings length 1 sub spacing mul height add yoffset mul translate
+
+    % Now use the baseline and justification information to translate so
+    % that the origin is at the baseline and positioning point for the
+    % first line of text.
+
+    justify maxwidth mul baseline neg translate
+
+    % Iterate over each of the lines to output it.  For each line,
+    % compute its width again so it can be properly justified, then
+    % display it.
+
+    strings {
+	dup stringwidth pop
+	justify neg mul 0 moveto
+	show
+	0 spacing neg translate
+    } forall
+} bind def
+
+%%EndProlog
+%%BeginSetup
+/CL 2 def
+%%IncludeResource: font Fixed
+%%IncludeResource: font Helvetica-Bold
+%%EndSetup
+
+%%Page: 1 1
+save
+306.0 396.0 translate
+0.68 0.68 scale
+-1517 -253 translate
+1094 507 moveto 1941 507 lineto 1941 0 lineto 1094 0 lineto closepath clip newpath
+gsave
+1265 235 moveto 150 0 rlineto 0 -200 rlineto -150 0 rlineto closepath
+0.794 0.794 0.587 setrgbcolor AdjustColor
+fill
+1265 235 moveto 150 0 rlineto 0 -200 rlineto -150 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1270 219 [
+    (GLOBAL ENVIRONMENT)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1270 203 [
+    ([other bindings])
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+matrix currentmatrix
+1331 328 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+0.587 0.587 0.397 setrgbcolor AdjustColor
+16 16 <222288882222888822228888222288882222888822228888222288882222
+8888> true StippleFill
+matrix currentmatrix
+1331 328 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+matrix currentmatrix
+1301 328 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+0.587 0.587 0.397 setrgbcolor AdjustColor
+16 16 <222288882222888822228888222288882222888822228888222288882222
+8888> true StippleFill
+matrix currentmatrix
+1301 328 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+/Helvetica-Bold findfont 12 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1286 283 [
+    (args: \050count\051)
+    ()
+] 14 0 0.5 0 () false DrawText
+grestore
+gsave
+/Helvetica-Bold findfont 12 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1286 275 [
+    (body: \050lambda \050\051 \050l ...)
+] 14 0 0.5 0 () false DrawText
+grestore
+gsave
+1301 328 moveto
+1301 303.5 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1301 298 moveto
+1305 308 lineto
+1302 306.5 lineto
+1300 306.5 lineto
+1297 308 lineto
+1301 298 lineto
+fill
+grestore
+gsave
+1331 328 moveto
+1331 358 lineto
+1361 358 lineto
+1361 239.857142857143 lineto
+1 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.397 0.397 0.190 setrgbcolor AdjustColor
+stroke
+1361 235 moveto
+1364.5 245 lineto
+1361.5 243.285714285714 lineto
+1360.5 243.285714285714 lineto
+1357.5 245 lineto
+1361 235 lineto
+fill
+grestore
+gsave
+1161 365 moveto 112 0 rlineto 0 -100 rlineto -112 0 rlineto closepath
+0.794 0.794 0.587 setrgbcolor AdjustColor
+fill
+1161 365 moveto 112 0 rlineto 0 -100 rlineto -112 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1166 349 [
+    (E1)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1265 240.5 moveto
+1265 265 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1265 235 moveto
+1269 245 lineto
+1266 243.5 lineto
+1264 243.5 lineto
+1261 245 lineto
+1265 235 lineto
+fill
+grestore
+gsave
+matrix currentmatrix
+1141 217 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+0.794 0.794 0.587 setrgbcolor AdjustColor
+fill
+matrix currentmatrix
+1141 217 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+matrix currentmatrix
+1111 217 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+0.794 0.794 0.587 setrgbcolor AdjustColor
+fill
+matrix currentmatrix
+1111 217 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+/Helvetica-Bold findfont 12 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1096 172 [
+    (args: \050\051)
+    ()
+] 14 0 0.5 0 () false DrawText
+grestore
+gsave
+/Helvetica-Bold findfont 12 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1096 164 [
+    (body: \050let \050\050local- ...)
+] 14 0 0.5 0 () false DrawText
+grestore
+gsave
+1111 217 moveto
+1111 192.5 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1111 187 moveto
+1115 197 lineto
+1112 195.5 lineto
+1110 195.5 lineto
+1107 197 lineto
+1111 187 lineto
+fill
+grestore
+gsave
+1141 217 moveto
+1141 247 lineto
+1141 280 lineto
+1155.5 280 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1161 280 moveto
+1151 284 lineto
+1152.5 281 lineto
+1152.5 279 lineto
+1151 276 lineto
+1161 280 lineto
+fill
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1270 187 [
+    (make-counter)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1268 187 moveto
+1245 187 lineto
+1245 217 lineto
+1161.5 217 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1156 217 moveto
+1166 213 lineto
+1164.5 216 lineto
+1164.5 218 lineto
+1166 221 lineto
+1156 217 lineto
+fill
+grestore
+gsave
+1294 490 moveto 100 0 rlineto 0 -100 rlineto -100 0 rlineto closepath
+0.794 0.794 0.587 setrgbcolor AdjustColor
+fill
+1294 490 moveto 100 0 rlineto 0 -100 rlineto -100 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1299 474 [
+    (E2)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1278.5 350 moveto
+1309 350 lineto
+1309 390 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1273 350 moveto
+1283 346 lineto
+1281.5 349 lineto
+1281.5 351 lineto
+1283 354 lineto
+1273 350 lineto
+fill
+grestore
+gsave
+matrix currentmatrix
+1189 475 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+0.587 0.587 0.397 setrgbcolor AdjustColor
+16 16 <222288882222888822228888222288882222888822228888222288882222
+8888> true StippleFill
+matrix currentmatrix
+1189 475 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+matrix currentmatrix
+1159 475 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+0.587 0.587 0.397 setrgbcolor AdjustColor
+16 16 <222288882222888822228888222288882222888822228888222288882222
+8888> true StippleFill
+matrix currentmatrix
+1159 475 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+/Helvetica-Bold findfont 12 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1144 430 [
+    (args: \050local-count\051)
+    ()
+] 14 0 0.5 0 () false DrawText
+grestore
+gsave
+/Helvetica-Bold findfont 12 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1144 422 [
+    (body: \050lambda \050n\051 \050 ...)
+] 14 0 0.5 0 () false DrawText
+grestore
+gsave
+1159 475 moveto
+1159 450.5 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1159 445 moveto
+1163 455 lineto
+1160 453.5 lineto
+1158 453.5 lineto
+1155 455 lineto
+1159 445 lineto
+fill
+grestore
+gsave
+1189 475 moveto
+1189 505 lineto
+1309 505 lineto
+1309 494.857142857143 lineto
+1 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.397 0.397 0.190 setrgbcolor AdjustColor
+stroke
+1309 490 moveto
+1312.5 500 lineto
+1309.5 498.285714285714 lineto
+1308.5 498.285714285714 lineto
+1305.5 500 lineto
+1309 490 lineto
+fill
+grestore
+gsave
+1426 489 moveto 152 0 rlineto 0 -100 rlineto -152 0 rlineto closepath
+0.794 0.794 0.587 setrgbcolor AdjustColor
+fill
+1426 489 moveto 152 0 rlineto 0 -100 rlineto -152 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1431 473 [
+    (E3)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1399.5 439.5 moveto
+1426 439.5 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1394 439.5 moveto
+1404 435.5 lineto
+1402.5 438.5 lineto
+1402.5 440.5 lineto
+1404 443.5 lineto
+1394 439.5 lineto
+fill
+grestore
+gsave
+matrix currentmatrix
+1491 344 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+0.794 0.794 0.587 setrgbcolor AdjustColor
+fill
+matrix currentmatrix
+1491 344 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+matrix currentmatrix
+1461 344 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+0.794 0.794 0.587 setrgbcolor AdjustColor
+fill
+matrix currentmatrix
+1461 344 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+/Helvetica-Bold findfont 12 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1446 299 [
+    (args: \050n\051)
+    ()
+] 14 0 0.5 0 () false DrawText
+grestore
+gsave
+/Helvetica-Bold findfont 12 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1446 291 [
+    (body: \050set! count \050 ...)
+] 14 0 0.5 0 () false DrawText
+grestore
+gsave
+1461 344 moveto
+1461 319.5 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1461 314 moveto
+1465 324 lineto
+1462 322.5 lineto
+1460 322.5 lineto
+1457 324 lineto
+1461 314 lineto
+fill
+grestore
+gsave
+1491 344 moveto
+1491 374 lineto
+1491 383.5 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1491 389 moveto
+1487 379 lineto
+1490 380.5 lineto
+1492 380.5 lineto
+1495 379 lineto
+1491 389 lineto
+fill
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1270 171 [
+    (c1)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1289 171 moveto
+1420 171 lineto
+1420 240 lineto
+1420 344 lineto
+1440.5 344 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1446 344 moveto
+1436 348 lineto
+1437.5 345 lineto
+1437.5 343 lineto
+1436 340 lineto
+1446 344 lineto
+fill
+grestore
+gsave
+1596 359 moveto 100 0 rlineto 0 -100 rlineto -100 0 rlineto closepath
+0.587 0.587 0.397 setrgbcolor AdjustColor
+16 16 <222288882222888822228888222288882222888822228888222288882222
+8888> true StippleFill
+1596 359 moveto 100 0 rlineto 0 -100 rlineto -100 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1601 343 [
+    (E4)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1601 327 [
+    (n)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1612 327 moveto
+1674.5 327 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1680 327 moveto
+1670 331 lineto
+1671.5 328 lineto
+1671.5 326 lineto
+1670 323 lineto
+1680 327 lineto
+fill
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1685 327 [
+    (3)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1583.5 404 moveto
+1611 404 lineto
+1611 359 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1578 404 moveto
+1588 400 lineto
+1586.5 403 lineto
+1586.5 405 lineto
+1588 408 lineto
+1578 404 lineto
+fill
+grestore
+gsave
+1616 489 moveto 100 0 rlineto 0 -100 rlineto -100 0 rlineto closepath
+0.587 0.587 0.397 setrgbcolor AdjustColor
+16 16 <222288882222888822228888222288882222888822228888222288882222
+8888> true StippleFill
+1616 489 moveto 100 0 rlineto 0 -100 rlineto -100 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1621 473 [
+    (E5)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1621 457 [
+    (n)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1632 457 moveto
+1694.5 457 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1700 457 moveto
+1690 461 lineto
+1691.5 458 lineto
+1691.5 456 lineto
+1690 453 lineto
+1700 457 lineto
+fill
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1705 457 [
+    (4)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1583.5 439 moveto
+1616 439 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1578 439 moveto
+1588 435 lineto
+1586.5 438 lineto
+1586.5 440 lineto
+1588 443 lineto
+1578 439 lineto
+fill
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1431 457 [
+    (local-count)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1522 457 moveto
+1556.5 457 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1562 457 moveto
+1552 461 lineto
+1553.5 458 lineto
+1553.5 456 lineto
+1552 453 lineto
+1562 457 lineto
+fill
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1567 457 [
+    (7)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1748 466 moveto 100 0 rlineto 0 -100 rlineto -100 0 rlineto closepath
+0.794 0.794 0.587 setrgbcolor AdjustColor
+fill
+1748 466 moveto 100 0 rlineto 0 -100 rlineto -100 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1753 450 [
+    (E6)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1258 370.5 moveto
+1258 381 lineto
+1748 381 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1258 365 moveto
+1262 375 lineto
+1259 373.5 lineto
+1257 373.5 lineto
+1254 375 lineto
+1258 365 lineto
+fill
+grestore
+gsave
+matrix currentmatrix
+1850 270 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+0.587 0.587 0.397 setrgbcolor AdjustColor
+16 16 <222288882222888822228888222288882222888822228888222288882222
+8888> true StippleFill
+matrix currentmatrix
+1850 270 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+matrix currentmatrix
+1820 270 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+0.587 0.587 0.397 setrgbcolor AdjustColor
+16 16 <222288882222888822228888222288882222888822228888222288882222
+8888> true StippleFill
+matrix currentmatrix
+1820 270 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+/Helvetica-Bold findfont 12 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1805 225 [
+    (args: \050local-count\051)
+    ()
+] 14 0 0.5 0 () false DrawText
+grestore
+gsave
+/Helvetica-Bold findfont 12 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1805 217 [
+    (body: \050lambda \050n\051 \050 ...)
+] 14 0 0.5 0 () false DrawText
+grestore
+gsave
+1820 270 moveto
+1820 245.5 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1820 240 moveto
+1824 250 lineto
+1821 248.5 lineto
+1819 248.5 lineto
+1816 250 lineto
+1820 240 lineto
+fill
+grestore
+gsave
+1850 270 moveto
+1850 300 lineto
+1850 381 lineto
+1852.85714285714 381 lineto
+1 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.397 0.397 0.190 setrgbcolor AdjustColor
+stroke
+1848 381 moveto
+1858 377.5 lineto
+1856.28571428571 380.5 lineto
+1856.28571428571 381.5 lineto
+1858 384.5 lineto
+1848 381 lineto
+fill
+grestore
+gsave
+1594 232 moveto 160 0 rlineto 0 -100 rlineto -160 0 rlineto closepath
+0.794 0.794 0.587 setrgbcolor AdjustColor
+fill
+1594 232 moveto 160 0 rlineto 0 -100 rlineto -160 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1599 216 [
+    (E7)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1751 360.5 moveto
+1751 232 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1751 366 moveto
+1747 356 lineto
+1750 357.5 lineto
+1752 357.5 lineto
+1755 356 lineto
+1751 366 lineto
+fill
+grestore
+gsave
+matrix currentmatrix
+1662 75 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+0.794 0.794 0.587 setrgbcolor AdjustColor
+fill
+matrix currentmatrix
+1662 75 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+matrix currentmatrix
+1632 75 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+0.794 0.794 0.587 setrgbcolor AdjustColor
+fill
+matrix currentmatrix
+1632 75 translate 15 15 scale 1 0 moveto 0 0 1 0 360 arc
+setmatrix
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+/Helvetica-Bold findfont 12 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1617 30 [
+    (args: \050n\051)
+    ()
+] 14 0 0.5 0 () false DrawText
+grestore
+gsave
+/Helvetica-Bold findfont 12 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1617 22 [
+    (body: \050set! count \050 ...)
+] 14 0 0.5 0 () false DrawText
+grestore
+gsave
+1632 75 moveto
+1632 50.5 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1632 45 moveto
+1636 55 lineto
+1633 53.5 lineto
+1631 53.5 lineto
+1628 55 lineto
+1632 45 lineto
+fill
+grestore
+gsave
+1662 75 moveto
+1662 105 lineto
+1662 126.5 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1662 132 moveto
+1658 122 lineto
+1661 123.5 lineto
+1663 123.5 lineto
+1666 122 lineto
+1662 132 lineto
+fill
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1270 155 [
+    (c2)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1289 155 moveto
+1429 155 lineto
+1626.76196687487 91.6772027247948 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1632 90 moveto
+1623.69608720871 96.8589381360839 lineto
+1624.20980384749 93.544410233797 lineto
+1623.59991194757 91.6396709155686 lineto
+1621.25651960901 89.2399808631701 lineto
+1632 90 lineto
+fill
+grestore
+gsave
+1464 232 moveto 100 0 rlineto 0 -100 rlineto -100 0 rlineto closepath
+0.587 0.587 0.397 setrgbcolor AdjustColor
+16 16 <222288882222888822228888222288882222888822228888222288882222
+8888> true StippleFill
+1464 232 moveto 100 0 rlineto 0 -100 rlineto -100 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1469 216 [
+    (E8)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1469 200 [
+    (n)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1480 200 moveto
+1542.5 200 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1548 200 moveto
+1538 204 lineto
+1539.5 201 lineto
+1539.5 199 lineto
+1538 196 lineto
+1548 200 lineto
+fill
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1553 200 [
+    (5)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1588.5 182 moveto
+1564 182 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1594 182 moveto
+1584 186 lineto
+1585.5 183 lineto
+1585.5 181 lineto
+1584 178 lineto
+1594 182 lineto
+fill
+grestore
+gsave
+1446 102 moveto 100 0 rlineto 0 -100 rlineto -100 0 rlineto closepath
+0.587 0.587 0.397 setrgbcolor AdjustColor
+16 16 <222288882222888822228888222288882222888822228888222288882222
+8888> true StippleFill
+1446 102 moveto 100 0 rlineto 0 -100 rlineto -100 0 rlineto closepath
+1 setlinewidth 0 setlinejoin 2 setlinecap
+0.000 0.000 0.000 setrgbcolor AdjustColor
+stroke
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1451 86 [
+    (E9)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1451 70 [
+    (n)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1462 70 moveto
+1524.5 70 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1530 70 moveto
+1520 74 lineto
+1521.5 71 lineto
+1521.5 69 lineto
+1520 66 lineto
+1530 70 lineto
+fill
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1535 70 [
+    (6)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1609 126.5 moveto
+1609 87 lineto
+1546 87 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1609 132 moveto
+1605 122 lineto
+1608 123.5 lineto
+1610 123.5 lineto
+1613 122 lineto
+1609 132 lineto
+fill
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1166 333 [
+    (count)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1209 333 moveto
+1243.5 333 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1249 333 moveto
+1239 337 lineto
+1240.5 334 lineto
+1240.5 332 lineto
+1239 329 lineto
+1249 333 lineto
+fill
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1254 333 [
+    (18)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1599 200 [
+    (local-count)
+] 16 0 0.5 0 () false DrawText
+grestore
+gsave
+1690 200 moveto
+1724.5 200 lineto
+2 setlinewidth
+0 setlinecap
+1 setlinejoin
+0.587 0.587 0.397 setrgbcolor AdjustColor
+stroke
+1730 200 moveto
+1720 204 lineto
+1721.5 201 lineto
+1721.5 199 lineto
+1720 196 lineto
+1730 200 lineto
+fill
+grestore
+gsave
+/Fixed findfont 15 scalefont setfont
+0.000 0.000 0.000 setrgbcolor AdjustColor
+1735 200 [
+    (11)
+] 16 0 0.5 0 () false DrawText
+grestore
+restore showpage
+
+%%Trailer
+end
+%%EOF

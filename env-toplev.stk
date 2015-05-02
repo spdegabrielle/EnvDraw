@@ -1,0 +1,225 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: env-toplev.stk 1.1.1.1 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;                       TOPLEVEL WIDGET
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(require "placement")
+
+(unless (provided? "env-toplev")
+
+(define PLACEMENT_INITIAL_POSITION (make-point 1250 1250))
+(define ENVDRAW_BITMAP (format #f "@~a/icons/envdraw" *EnvDraw-library*))
+
+(define (update-object-label t obj)
+  (slot-set! (object-label-of t) 'text (viewed-rep (safen-list obj))))
+
+(define-class <env-toplevel> (<toplevel>)
+  ((canv       :getter canvas-of)
+   (menu           :getter menu-of)
+   (xscrollbar :getter xscrollbar-of)
+   (yscrollbar :getter yscrollbar-of)
+   (startx         :getter scroll-startx-of)
+   (starty         :getter scroll-starty-of)
+   (listbox    :getter listbox-of)
+   (obj-label  :getter object-label-of)
+   (metro      :getter metropolis-of :initform #f)
+   (color      :initform (cadr COLORS_LIST) :getter color-of)
+   (table      :initform (make-hash-table) :getter table-of)))
+
+(define-method initialize((self <env-toplevel>) initargs)
+  (next-method)
+  (prepend! self *toplevel-views*)
+  (slot-set! self 'title "EnvDraw")
+  (slot-set! self 'min-size '(600 700))
+  (slot-set! self 'max-size '(2000 1600))
+  (slot-set! self 'geometry ENV_INITSIZE)
+  (let* ((frame (make <frame>
+		      :parent self
+		      :background MENU_BACKGROUND_COLOR))
+	 (optionframe (make <frame>
+			    :parent frame
+			    :background MENU_BACKGROUND_COLOR))
+	 (menub (make <Menu-Button>
+		      :parent optionframe
+		      :relief 'raised
+		      :text "Options"
+		      :background MENU_BACKGROUND_COLOR
+		      :active-background MENU_ABACKGROUND_COLOR
+		      :foreground MENU_FOREGROUND_COLOR))
+	 (menu (make <Menu>
+		     :parent menub
+		     :activebackground MENU_ABACKGROUND_COLOR
+		     :foreground MENU_FOREGROUND_COLOR
+		     :background MENU_BACKGROUND_COLOR))
+	 (cmenu (make <Menu>
+		      :parent menu
+		      :activebackground MENU_ABACKGROUND_COLOR
+		      :foreground MENU_FOREGROUND_COLOR
+		      :background MENU_BACKGROUND_COLOR))
+	 (label (make <label>
+		      :background MENU_BACKGROUND_COLOR
+		      :active-background MENU_ABACKGROUND_COLOR
+		      :foreground MENU_FOREGROUND_COLOR
+		      :parent optionframe
+		      :borderwidth 2
+		      :anchor "w"
+		      :relief 'sunken
+		      :font BIGFONT))
+	 (xscrollbar (make <scrollbar>
+			   :background SCROLL_BACKGROUND_COLOR
+			   :active-background SCROLL_ABACKGROUND_COLOR
+			   :trough-color SCROLL_TROUGH_COLOR
+			   :orientation 'h
+			   :parent frame))
+	 (yscrollbar (make <scrollbar>
+			   :background SCROLL_BACKGROUND_COLOR
+			   :active-background SCROLL_ABACKGROUND_COLOR
+			   :trough-color SCROLL_TROUGH_COLOR
+			   :orientation 'v
+			   :parent frame))
+	 (canvas (make <cleanflag-canvas>
+		       :background CANVAS_BACKGROUND_COLOR
+		       :scroll-region
+		       (format #f "0 0 ~A ~A"
+			       (car VIEW_CANVAS_SIZE)
+			       (cadr VIEW_CANVAS_SIZE))
+		       :x-scroll-increment 1
+		       :y-scroll-increment 1
+		       :parent frame
+		       :relief 'groove))
+	 (listb (make <Scroll-listbox>
+		      :background SCROLL_BACKGROUND_COLOR
+		      :active-background SCROLL_ABACKGROUND_COLOR
+		      :trough-color SCROLL_TROUGH_COLOR
+		      :foreground MENU_FOREGROUND_COLOR
+		      :parent self)))
+    (for-each
+     (lambda (x)
+       (menu-add cmenu 'command
+		 :label "          "
+		 :background (asHex x)
+		 :activebackground (complementAsHex x)
+		 :command (make-color-setter self x)))
+     COLORS_LIST)
+    (menu-add menu 'command
+	      :label "Garbage Collect"
+	      :background MENU_BACKGROUND_COLOR
+	      :activebackground MENU_ABACKGROUND_COLOR
+	      :foreground MENU_FOREGROUND_COLOR
+	      :command (gc-entire-canvas (table-of self)))
+    (menu-add menu 'command
+	      :label "Continue"
+	      :background MENU_BACKGROUND_COLOR
+	      :activebackground MENU_ABACKGROUND_COLOR
+	      :foreground MENU_FOREGROUND_COLOR
+	      :command env-continue)
+    (menu-add menu 'command
+	      :label "Step"
+	      :background MENU_BACKGROUND_COLOR
+	      :activebackground MENU_ABACKGROUND_COLOR
+	      :foreground MENU_FOREGROUND_COLOR
+	      :command env-step)
+    (menu-add menu 'checkbutton
+	      :label "Stepping"
+	      :background MENU_BACKGROUND_COLOR
+	      :activebackground MENU_ABACKGROUND_COLOR
+	      :foreground MENU_FOREGROUND_COLOR
+	      :command env-toggle-use-step)
+    (menu-add menu 'command
+	      :label "Print"
+	      :background MENU_BACKGROUND_COLOR
+	      :activebackground MENU_ABACKGROUND_COLOR
+	      :foreground MENU_FOREGROUND_COLOR
+	      :command menu-print-command)
+    (menu-add menu 'cascade
+	      :label "Colors"
+	      :background MENU_BACKGROUND_COLOR
+	      :activebackground MENU_ABACKGROUND_COLOR
+	      :foreground MENU_FOREGROUND_COLOR
+	      :menu cmenu)
+    (menu-add menu 'command
+	      :label "About EnvDraw"
+	      :background MENU_BACKGROUND_COLOR
+	      :activebackground MENU_ABACKGROUND_COLOR
+	      :foreground MENU_FOREGROUND_COLOR
+	      :command describe-envdraw)
+    (menu-add menu 'command
+	      :label "Help"
+	      :background MENU_BACKGROUND_COLOR
+	      :activebackground MENU_ABACKGROUND_COLOR
+	      :foreground MENU_FOREGROUND_COLOR
+	      :command envdraw-help)
+    (menu-add menu 'command
+	      :label "Exit"
+	      :background MENU_BACKGROUND_COLOR
+	      :activebackground MENU_ABACKGROUND_COLOR
+	      :foreground MENU_FOREGROUND_COLOR
+	      :command env-exit)
+    (slot-set! self 'menu menu)
+    (slot-set! self 'xscrollbar xscrollbar)
+    (slot-set! self 'yscrollbar yscrollbar)
+    (slot-set! self 'obj-label label)
+    (slot-set! xscrollbar 'command (make-canvas-fn canvas 'xview))
+    (slot-set! yscrollbar 'command (make-canvas-fn canvas 'yview))
+    (slot-set! canvas 'x-scroll-command (make-canvas-scroller xscrollbar))
+    (slot-set! canvas 'y-scroll-command (make-canvas-scroller yscrollbar))
+    (slot-set! self 'canv canvas)
+    (slot-set! self 'listbox listb)
+    (slot-set! self 'startx 0)
+    (slot-set! self 'starty 0)
+    (bind canvas "<Button-2>" (make-start-mouse-scrolling-fn self))
+    (bind canvas "<B2-Motion>" (make-mouse-motion-fn self))
+    (set! CANVAS_X_SCROLLINC (x-scroll-increment canvas))
+    (set! CANVAS_Y_SCROLLINC (y-scroll-increment canvas))
+    (slot-set! self 'icon-bitmap ENVDRAW_BITMAP)
+    (pack frame       :expand #t    :fill 'both)
+    (pack optionframe :side 'top    :fill 'x)
+    (pack menub       :side 'left   :fill 'y :pady 2   :padx 2)
+    (pack label       :expand #t    :fill 'x :pady 2   :padx 2)
+    (pack listb       :expand #f    :fill 'both)
+    (pack xscrollbar  :side 'bottom :fill 'x)
+    (pack yscrollbar  :side 'right  :fill 'y)
+    (pack canvas      :expand #t    :fill 'both)
+    (set! CANVAS_X_SCROLLINC (x-scroll-increment canvas))
+    (set! CANVAS_Y_SCROLLINC (y-scroll-increment canvas))
+    (x-view-scroll-units canvas (- (/ (x-coord PLACEMENT_INITIAL_POSITION)
+				      CANVAS_X_SCROLLINC)
+				   250))
+    (y-view-scroll-units canvas (- (/ (y-coord PLACEMENT_INITIAL_POSITION)
+				      CANVAS_Y_SCROLLINC)
+				   250))
+    (update)))
+
+(define-method insert((self <Scroll-listbox>) text)
+  (let* ((widget (slot-ref self 'Id))
+	 (size (widget 'size)))
+    (widget 'insert "end" text)
+    (if (< 100 size) ;; it will keep 100 lines of history
+	(widget 'delete 0))
+    (widget 'yview (inexact->exact (- (+ 1 size) (apply - (scrollbar-get (v-scrollbar-of self))))))))
+
+(define-method env-toplevel?((self <env-toplevel>)) #t)
+(define-method env-toplevel?((self <top>)) #f)
+
+(define (gc-entire-canvas ht)
+  (lambda ()
+    (map (lambda (x) (delete-object (cdr x) ht)) (hash-table->list ht))))
+
+(provide "env-toplev")
+
+)

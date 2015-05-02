@@ -1,0 +1,28 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: view-debug.stk 1.2 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+(unless (provided? "view-debug")
+
+(define (show-coords)
+  (bind (canvas-of *view-root*) "<Motion>"
+	(lambda (x y)
+	  (update-object-label
+	   *view-root*
+	   (+ (list x y)
+	      (first-two (get-visible-canvas-region *view-root*)))))))
+
+(provide "view-debug")
+)

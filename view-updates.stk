@@ -1,0 +1,324 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: view-updates.stk 1.1.1.1 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                       SET-CXR! REDEFINITIONS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(unless (provided? "view-updates")
+
+(define set-car!
+  (let ((base:set-car! set-car!))
+    (lambda (obj new)
+      (unless (eq? (car obj) new)
+	(base:set-car! obj new)
+	(update-set-cxr obj new 'car)))))
+
+(define set-cdr!
+  (let ((base:set-cdr! set-cdr!))
+    (lambda (obj new)
+      (unless (eq? (cdr obj) new)
+	(base:set-cdr! obj new)
+	(update-set-cxr obj new 'cdr)))))
+
+(define (data-viewed? o)
+  (define (look-for-each tl)
+    (let ((lu (hash-table-get (table-of tl) o #f)))
+      (if lu (list (cons lu tl)) '())))
+  (define (look-for-in-tls top-levels)
+    (apply append (map look-for-each top-levels)))
+  (if (null? *toplevel-views*)
+      #f
+      (let* ((t (look-for-in-tls *toplevel-views*)))
+	(if (null? t) #f t))))
+
+(define (symbol-viewed? s tls)
+  (let tlloop ((tls tls))
+    (if (or (null? tls) (not (view-toplevel? (car tls))))
+	'()
+	(let asloop ((l (syms-alist-of (car tls))))
+	  (cond ((null? l) (tlloop (cdr tls)))
+		((equal? s (sym-record-sym-name (car l)))
+		 (cons (cons (sym-record-root-widget (car l)) (car tls))
+		       (tlloop (cdr tls))))
+		(else (asloop (cdr l))))))))
+
+(define (update-set-cxr obj new type)
+  (let ((viewed-objects (data-viewed? obj)))
+    (if viewed-objects
+	(for-each
+	 (lambda (x)
+	   (update-viewed-object (car x) (cdr x) new type))
+	 viewed-objects)))
+  @undefined)
+
+;; this works by building a new tree starting at new using the old
+;; hash table, the return value of build-tree is the root, if build-tree
+;; returns false, then no new viewed-objects were created.
+
+(define (update-viewed-object vobj tl new type)
+  (let* ((ht (table-of tl))
+	 (car? (equal? type 'car))
+	 (root (build-tree tl new DEFAULT_PREDICATE))
+	 ;; if no new viewed-objects were made... then find new in the table
+	 (real-root (or root (hash-table-get ht (if (compound-procedure? new)
+						    (procedure-object new)
+						    new))))
+	 (old-child (if car? (carchild-of vobj) (cdrchild-of vobj))))
+    (if (null-object? old-child)      ;; auto-delete nulls no matter what,
+	(delete-object old-child ht)  ;; just because they are different
+	(if car?
+	    (if GARBAGE_COLLECT?
+		(delete-object (cdr (assoc 'car (pointers-of vobj))) ht)
+		(gc-pointer (cdr (assoc 'car (pointers-of vobj))) ht))
+	    (if GARBAGE_COLLECT?
+		(delete-object (cdr (assoc 'cdr (pointers-of vobj))) ht)
+		(gc-pointer (cdr (assoc 'cdr (pointers-of vobj))) ht))))
+    ;; viewed-objects don't need to be removed because nothing will ever
+    ;; try to point to them again.
+    (unless (viewed-object? old-child)
+      (remove-group-from-parent old-child))
+    ;; this will add the group if it has no parent.
+    (add-group-to-tmci-group vobj real-root)
+    (cond ((null? new)
+	   (add-to-tmci-group vobj (sentinel-of root))
+	   (apply move (sentinel-of root)
+		  (+ (if car? CAR_OFFSET CDR_OFFSET)
+		     (list 0 CELL_SIZE)
+		     (coords-of vobj))))
+	  (else
+	   (if car?
+	       (add-car-pointer vobj real-root tl)
+	       (add-cdr-pointer vobj real-root tl))
+	   (if root
+	       (place-new-widget root tl)
+	       ;; if no new viewed-objects were made, only move a pointer
+	       (apply move-head
+		      (cdar (pointers-of vobj))
+		      (coords-of real-root)))))
+    (if car?
+	(slot-set! vobj 'carchild real-root)
+	(slot-set! vobj 'cdrchild real-root))
+    (gc-view tl)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                        SET! REDEFINITION
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define (adjust-symbol-bindings a b c) 0)
+
+(define-macro (nset! sym val)
+  `(let ((foo ,val))
+     (unless (eq? ,sym foo)
+       (adjust-symbol-bindings (quote ,sym) ,sym foo)
+       (stk::set! ,sym foo))))
+
+(set! set! nset!)
+
+(define (adjust-symbol-bindings symbol old-val new-val)
+  (let ((old-viewed? (symbol-viewed? symbol *toplevel-views*)))
+    (unless (null? old-viewed?)
+      (for-each
+       (lambda (x)
+	 (let* ((vobj (car x))
+		(tl (cdr x))
+		(table (table-of tl))
+		(new-ptr? (hash-table-get table new-val #f)))
+	   (let loop ((syms (syms-alist-of tl)))
+	     (let ((sym (car syms)))
+	       (cond ((null? syms) '())
+		     ((equal? symbol (sym-record-sym-name sym))
+		      (let* ((symwid (sym-record-sym-widget sym))
+			     (oldptr (car (pointers-to symwid))))
+			(gc-pointer oldptr table)
+			(remove! x old-viewed?)
+			(remove-group-from-parent symwid)
+			(if new-ptr?
+			    (begin
+			      (set-sym-record-root-widget! sym new-ptr?)
+			      (set-precise-position new-ptr?)
+			      (make-simple-pointer new-ptr? symwid "first"
+				(append (+ SYMBOL_OFFSET (coords-of new-ptr?))
+					(last-two (coords-of oldptr)))
+				tl)
+			      (bind-for-entrance symwid tl new-val)
+			      (add-group-to-tmci-group new-ptr? symwid)
+			      (gc-view tl))
+			    (let* ((newroot (if (atom? new-val)
+						(make-single-atom new-val tl)
+						(build-tree tl new-val DEFAULT_PREDICATE)))
+				   (off (if (viewed-object? newroot)
+					    (list (+ (-1/2 (text-width (scheme-object-of newroot))) CELL_SIZE) 0)
+					    '(0 0))))
+			      (set-sym-record-root-widget! sym newroot)
+			      (place-new-widget newroot tl)
+			      (make-simple-pointer newroot symwid "first"
+				(append (+ SYMBOL_OFFSET off
+					   (coords-of newroot))
+					(last-two (coords-of oldptr)))
+				tl)
+			      (bind-for-entrance symwid tl new-val)
+			      (add-group-to-tmci-group newroot symwid)
+			      (gc-view tl)))))
+		     (else (loop (cdr syms))))))))
+       (or old-viewed? '())))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                         GARBAGE COLLECTION
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define (bind-for-gc self tl)
+  (bind self GC_MOUSE_BUTTON (lambda () (delete-object self (table-of tl)))))
+
+(define (gc-view tl)
+  ;; this version of gc-view will gc environments also, there are stubs
+  ;; that return #f in view-profiles in case envdraw is not loaded.
+  ;; use a simple DFS from the root node to determine objects still pointed to.
+  (let* ((ht (table-of tl))
+	 (objs (map cdr (hash-table->list ht))))
+    (define (traverse obj)
+      (when (gc-flag-of obj)
+	(slot-set! obj 'gc-flag #f)
+	(cond ((viewed-cell? obj)
+	       (traverse (carchild-of obj))
+	       (traverse (cdrchild-of obj)))
+	      ((procedure-object? obj)
+	       (traverse (frame-of obj)))
+	      ((frame-object? obj)
+	       (for-each
+		(lambda (x)
+		  (let ((it (binding-object x)))
+		    (if (tmci-widget? (value-widget-of it))
+			(traverse (value-widget-of it)))))
+		(first-frame (environment-of obj)))
+	       (if (not (null? (rest-frames (environment-of obj))))
+		   (traverse (frame-object (rest-frames (environment-of obj))))))
+	      (else '()))))
+    (for-each
+     (lambda (x)
+       (unless (gc-flag-of x)
+	 (slot-set! x 'gc-flag #t)))
+     objs)
+    (if (view-toplevel? *view-root*)
+	(begin (for-each traverse (map car (syms-alist-of tl)))
+	       (for-each (lambda (x) (slot-set! x 'gc-flag #f))
+			 (map caddr (syms-alist-of tl))))
+	(traverse (frame-object the-global-environment)))
+    (if GARBAGE_COLLECT?
+	(for-each
+	 (lambda (x)
+	   (if (gc-flag-of x)
+	       (delete-object x ht)))
+	 objs)
+	(for-each
+	 (lambda (x)
+	   (if (gc-flag-of x)
+	       (mark-object-for-collection x ht)))
+	 objs))))
+
+(define (mark-object-for-collection obj ht)
+  (cond ((viewed-cell? obj)
+	 (for-each
+	  (lambda (x)
+	    (slot-set! x 'stipple GC_STIPPLE_PATTERN)
+	    (darken-widget! x obj))
+	  (body-of obj))
+	 (for-each
+	  (lambda (x) (gc-pointer (cdr x) ht))
+	  (pointers-of obj)))
+	((procedure-object? obj)
+	 (for-each
+	  (lambda (x)
+	    (slot-set! x 'stipple GC_STIPPLE_PATTERN)
+	    (darken-widget! x obj))
+	  (body-of obj))
+	 (gc-pointer (cdar (pointers-of obj)) ht))
+	((frame-object? obj)
+	 (slot-set! (sentinel-of obj) 'stipple GC_STIPPLE_PATTERN)
+	 (darken-widget! (sentinel-of obj) obj)
+	 (for-each
+	  (lambda (x) (gc-pointer (cdr x) ht))
+	  (pointers-of obj)))
+	(else '())))
+
+(define-method delete-object((obj <viewed-cell>) ht)
+  (when (gc-flag-of obj)
+    (slot-set! obj 'gc-flag #f)
+    (hash-table-remove! ht (scheme-object-of obj))
+    (set-cleanflag! (canvas-of obj) #f)
+    (for-each (lambda (x) (delete-object (cdr x) ht)) (pointers-of obj))
+    (for-each (lambda (x) (delete-object x ht)) (pointers-to obj))
+    (for-each safe-destroy (widgets-of obj))
+    (delete-object (cdrchild-of obj) ht)
+    (delete-object (carchild-of obj) ht)))
+
+(define-method delete-object((obj <viewed-object>) ht)
+  (when (gc-flag-of obj)
+    (hash-table-remove! ht obj)
+    (slot-set! obj 'gc-flag #f)
+    (set-cleanflag! (canvas-of obj) #f)
+    ;; atoms were hashed by their tmci widget because otherwise
+    ;; they dont satisfy eq? (and clobber old hash entries)
+    (safe-destroy (sentinel-of obj))
+    (for-each (lambda (x) (delete-object (cdr x) ht)) (pointers-of obj))
+    (for-each
+     (lambda (x) (delete-object x ht))
+     (pointers-to obj))
+    (unless (null? (pointers-to obj))
+      (delete-object (parent-of (car (pointers-to obj))) ht))))
+
+(define-method delete-object((obj <null-object>) ht)
+  (safe-destroy (sentinel-of obj)))
+
+(define-method delete-object((obj <tk-canvas-item>) ht)
+  (safe-destroy obj))
+
+(define-method delete-object((obj <top>) ht) #t)
+
+(define (un-gc obj ht)
+  (when (gc-flag-of obj)
+    (slot-set! obj 'gc-flag #f)
+    (when (viewed-cell? obj)
+      (for-each
+       (lambda (x)
+	 (slot-set! x 'stipple STIPPLE_PATTERN)
+	 (lighten-widget! x obj))
+       (body-of obj))
+      (let ((it (pointers-of obj)))
+	(let ((it2 (assoc 'car it)))
+	  (if (and it2 (not (null? (cdr it2)))) (un-gc-pointer (cdr it2) ht)))
+	(let ((it2 (assoc 'cdr it)))
+	  (if (and it2 (not (null? (cdr it2)))) (un-gc-pointer (cdr it2) ht))))
+      (un-gc (carchild-of obj) ht)
+      (un-gc (cdrchild-of obj) ht))))
+
+(define (gc-pointer pointer ht)
+  (unless (null? pointer)
+    (thin-pointer! pointer)
+    (darken-widget! pointer pointer)
+    (bind pointer GC_MOUSE_BUTTON
+	  (lambda ()
+	    (delete-object pointer ht)
+	    (delete-object child ht)))))
+
+(define (un-gc-pointer pointer ht)
+  (lighten-widget! pointer pointer)
+  (thicken-pointer! pointer)
+  (bind pointer GC_MOUSE_BUTTON '()))
+
+(provide "view-updates")
+
+)

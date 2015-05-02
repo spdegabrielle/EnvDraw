@@ -1,0 +1,234 @@
+						  15 September, 1996
+
+Announcing version 1.2 of EnvDraw, an instructional package for STk.
+
+EnvDraw is a environment diagramming package which draws environment
+diagrams as taught in Abelson and Sussman's _Structure and
+Interpretation of Computer Languages_.  It was written as an
+instructional tool for the CS61A course at the University of
+California at Berkeley.  The environment diagrammer is a metacircular
+evaluator which draws procedures, environments, and box and pointer
+diagrams along with all the accompanying symbols and mutation.  It
+includes a box and pointer diagrammer which handles circular list
+structures, cons cell mutation, and also will watch for modification
+of any symbols known to be pointing to drawn cells.
+
+			     REQUIREMENTS
+
+EnvDraw 1.2 works with STk 3.1.  Slib must be installed.  Optionally,
+a patch to error.c in the source distribution allows the metacircular
+evaluator to catch errors nicely.
+
+			   Getting EnvDraw
+
+I have placed a copy of envdraw-1.2.tar.gz in the following places:
+
+ftp://ftp.xcf.berkeley.edu/pub/envdraw/envdraw-1.2.tar.gz
+
+in the incoming directory of the scheme repository:
+
+ftp://ftp.cs.indiana.edu/pub/scheme-repository/incoming/envdraw-1.2.tar.gz
+
+in the incoming directory of the STk home site:
+
+ftp://kaolin.unice.fr/pub/incoming/envdraw-1.2.tar.gz
+
+			      INSTALLING
+
+Pick a directory to install the EnvDraw sources in.  If you would
+like to install the sources as a subdirectory of your home directory
+and the envdraw-1.2.tar.gz file is located in the same directory,
+
+% cd ~
+% gunzip envdraw-1.2.tar.gz
+% tar -xf envdraw-1.2.tar
+
+This extracts a subdirectory named envdraw-1.2 with a number of files.
+The files are organized as follows:
+
+envdraw-1.2/Help/	HTML help files
+envdraw-1.2/doc/	Postscript and LaTeX documentation
+envdraw-1.2/icons/	Icons used by Tk
+envdraw-1.2/diffs/	The optional diff to error.c described above
+envdraw-1.2/test/	Some tests
+envdraw-1.2/*.stk	The source files
+
+To run STk with EnvDraw, you should have SCHEME_LIBRARY_PATH set to
+the location of slib and ENVDRAW_LIBRARY_PATH set to the location of
+the sources.
+
+If you are using a script to start stk, the following will do,
+
+ENVDRAW_LIBRARY_PATH=$HOME/jmacd/envdraw/
+export ENVDRAW_LIBRARY_PATH
+
+or you can put
+
+setenv ENVDRAW_LIBRARY_PATH ~/envdraw
+
+in your .cshrc or similar startup file.
+
+I recommend adding something similar to the following in whatever
+startup file you normally run for STk.
+
+(autoload "SOME_PATH/view.stk" view)
+(autoload "SOME_PATH/meta.stk" envdraw)
+
+Whatever method you use, make sure that the files are loaded and
+everything should work.
+
+			    USING ENVDRAW
+
+There are two separate applications included with EnvDraw.  The first
+is a box and pointer diagrammer. To use the box and pointer
+diagrammer, just type (view DATA).
+
+STk> (define l (list 1 2 3))
+#[undefined]
+STk> (view l)
+#[<viewed-cell> #p401001d8]
+
+A top-level window will be created containing a diagram of the symbol
+`l' pointing to the diagram of the list.  The window containing the
+diagram has a label and three buttons on the top.  Entering any item
+with the mouse will print the printed representation of that cell in
+the label.  An OPTION menu with the buttons DISMISS, FOCUS, and COLORS
+is located at the top left.  The DISMISS button destroys the window.
+The FOCUS button is a checkbutton which indicates that a particular
+window is the current window into which new diagrams will be drawn.
+If a particular window is the current window, pressing the FOCUS
+button will unfocus it, so that the next time view is called a new
+window will be created.  Otherwise, pressing the FOCUS button will
+make that window the current window.  If you would like each call to
+VIEW to create a new window, set the value *view-root* to #f.  The
+COLORS button opens a menu which allows selection of a color which
+determines the color of anything new drawn in that window.
+
+Once a particular cell is drawn, any mutation of that cell will be
+recorded.  For example, continuing with the above example, if you now
+type:
+
+STk> (set-car! l 4)
+#[undefined]
+
+The cell which `l' points to now has a pointer to a `4' instead of the
+`1' which it previously pointed to.  The old pointer has thinned and
+darkened, but remains on the diagram.  You can remove the `1' and the
+pointer to it by clicking Button-3 on the `1' or the pointer to it.
+
+When the mutation occured new data had to be put on the diagram.
+Since it would be difficult to pick a really good place to diagram new
+objects and cells, anything on the diagram is movable.  It will,
+however, try to find a good place to put the new data.
+
+To move an item, click Button-1 over that item and drag it.  This will
+move the item and any descendants of it.  This will let you arrange
+the diagram to exploit any symmetries or organize the diagram.
+Button-2 will move just one item and not its descendants.
+
+The diagrammer will work for arbitrarily circular and complicated list
+structures.  You can also mutate cell pointers to data which is
+already diagrammed.  For example, now try:
+
+STk> (set-cdr! (cddr l) l)
+#[undefined]
+
+Now the tail of the list points to itself.  In the label at the top of
+the window, a (4 2 3 ...) will be displayed if the front of the list
+is entered.
+
+The algorithm that initially places the cells can either produce tree
+structured data structures or list structures.  Each cell may be drawn
+with its pointers pointing down and to the left and right as if it
+were a tree node or with its car pointer going straight down and its
+cdr pointer going to the right.  The method that is chosen is based on
+the return value of a predicate, which is called with the cell in
+question as an argument.  This predicate must return true if the cell
+is to be drawn as a tree and false if the cell is to be drawn as a
+list.  This predicate defaults to (lambda (x) (not (list? x))), so
+that anything that is a true list will be drawn so.  You can tell it to
+use a different predicate by specifying it as an additional argument
+to view.  For example, you can draw a weird looking structure with
+
+STk> (define s (list #f #t #f))
+#[undefined]
+STk> (view s (lambda (x) (car x)))
+#[<viewed-cell> #p400d0b00]
+
+Set! is also redefined so that if you modify the binding of a viewed
+symbol it will update the diagram.  If you view something that is not
+bound by a symbol, it will be diagrammed with #[no binding] as its
+symbol.  If you redefine something which has been viewed, it will not
+update the diagram, if you feel this is really a problem send me a
+complaint.
+
+If you have mutated a list such that there are cells on the diagram
+which are not pointed to by anything on the diagram, they will be
+marked by stippling the body of the cell and darkening it.  You can
+delete it in the same method described above.  Press Button-3 and you
+will delete it and anything that points to it or that it points to.
+How can anything point to it?  Pointers stay around after set-car! and
+set-cdr! act upon a cell, though darkened and thinned.  It is also possible
+that another symbol is bound to that data though it has been marked as
+garbage in the diagram.  If you somehow try to view that data after it
+has been marked as garbage, it will unmark itself properly.  If you do
+not like keeping garbage around on the diagram, there is a variable
+GARBAGE_COLLECT? which is false by default which tells it whether to
+automatically delete garbage from the diagram.  It is set in the
+envdraw/view.stk file, relative to the library directory, along with a
+few other user-customizable variables.
+
+The second application included with EnvDraw, from which it derives
+its name, is an environment diagrammer.  This can be started by typing
+(envdraw) from the STk prompt.  It will bring up a top-level window
+with a global environment frame placed in the center.  The top-level
+window also contains a listbox, a label, and 5 buttons labeled STEP,
+CONTINUE, STEPPING, COLORS, and EXIT.  The label provides the same
+type of output as it did in the box and pointer application.  The STEP
+and CONTINUE buttons will step the evaluator through evaluation.  STEP
+will advance on step.  CONTINUE will continue evaluation until the
+REPL finishes.  STEPPING toggles whether or not to step at all.
+COLORS behaves exactly like in the view application.  EXIT leaves
+EnvDraw and STk.
+
+View will not work inside the metacircular evaluator, as macros aren't
+supported, and view is a macro.  It should not be neccesary to view
+anything though, as all data is diagrammed.
+
+You will be placed in a metacircular evaluator where everything you
+evaluate is traced and drawn.  When something is entered to the REPL
+it will be evaluated, tracing the evaluation in the listbox in the
+window.  If stepping is enabled, it will pause at each call to apply,
+announcing whether a primitive (or any underlying applicable object)
+is being applied or whether a lambda expression created in the
+metacircular evaluator is being applied.  Environment diagrams are
+drawn just as in Structure and Interpretation of Computer Programs.
+Environement frames, procedures, and list structures which have become
+garbage will be marked as such in the same manner as the view
+application.  Button-1 moves an object and its decsendants.  Button-2
+moves just one object.  Button-3 will delete garbage.
+
+The meta-evaluator provides several built-in procedures.  LOAD will
+load a scheme source file into the evaluator.  DISPLAY and PRINT are
+the only properly defined output functions.  The evaluator is fairly
+complete, providing most of the R4RS special forms.  Letrec is not
+supported.  PRINT-CANVAS will try to print the canvas using the
+printer command named in *print-command* or print a postscript file to
+a file named by an argument.
+
+The meta-evaluator is equipped for catching and printing error
+messages, however the lack of error handling support in STk created a
+problem in this respect.  Unless you can recompile STk with a small
+patch to error.c, an error in the meta-evaluator will bring you back
+to the STk REPL.  The patch to error.c sets two global variables with
+the error messages.  Not a very elegant solution, but it works.  The
+variable *meta-debug* toggles whether to use this error handling.  If
+the patch has been applied, it will print an error message and return
+to the prompt.  If the patch has not been applied, you can re-enter
+the meta REPL by typing (driver-loop).  The patch is contained in the
+distribution and named error.c.diffs.  It can be applied with the Unix
+"patch" utility.  It will automatically detect if this patch has been
+applied.
+
+To exit the evaluator send an EOF, (exit), or hit the EXIT button
+in the OPTIONS menu.

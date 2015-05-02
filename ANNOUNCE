@@ -1,0 +1,78 @@
+						  15 September, 1996
+
+Announcing version 1.2 of EnvDraw, an instructional package for STk.
+
+EnvDraw is a environment diagramming package which draws environment
+diagrams as taught in Abelson and Sussman's _Structure and
+Interpretation of Computer Languages_.  It was written as an
+instructional tool for the CS61A course at the University of
+California at Berkeley.  The environment diagrammer is a metacircular
+evaluator which draws procedures, environments, and box and pointer
+diagrams along with all the accompanying symbols and mutation.  It
+includes a box and pointer diagrammer which handles circular list
+structures, cons cell mutation, and also will watch for modification
+of any symbols known to be pointing to drawn cells.
+
+			     REQUIREMENTS
+
+EnvDraw works with STk 3.1.  Slib must be installed.  Optionally, a
+patch to error.c in the source distribution allows the metacircular
+evaluator to catch errors nicely.
+
+			   Getting EnvDraw
+
+I have placed a copy of envdraw-1.2.tar.gz in the following places:
+
+ftp://ftp.csua.berkeley.edu/pub/envdraw/envdraw-1.2.tar.gz
+
+in the incoming directory of the scheme repository:
+
+ftp://ftp.cs.indiana.edu/pub/scheme-repository/incoming/envdraw-1.2.tar.gz
+
+in the incoming directory of the STk home site:
+
+ftp://kaolin.unice.fr/pub/incoming/envdraw-1.2.tar.gz
+
+			      INSTALLING
+
+Pick a directory to install the EnvDraw sources in.  If you would
+like to install the sources as a subdirectory of your home directory
+and the envdraw-1.2.tar.gz file is located in the same directory,
+
+% cd ~
+% gunzip envdraw-1.2.tar.gz
+% tar -xf envdraw-1.2.tar
+
+This extracts a subdirectory named envdraw-1.2 with a number of files.
+The files are organized as follows:
+
+envdraw-1.2/Help/	HTML help files
+envdraw-1.2/doc/	Postscript and LaTeX documentation
+envdraw-1.2/icons/	Icons used by Tk
+envdraw-1.2/diffs/	The optional diff to error.c described above
+envdraw-1.2/test/	Some tests
+envdraw-1.2/*.stk	The source files
+
+To run STk with EnvDraw, you should have SCHEME_LIBRARY_PATH set to
+the location of slib and ENVDRAW_LIBRARY_PATH set to the location of
+the sources.
+
+If you are using a script to start stk, the following will do,
+
+ENVDRAW_LIBRARY_PATH=$HOME/jmacd/envdraw-1.2/
+export ENVDRAW_LIBRARY_PATH
+
+or you can put
+
+setenv ENVDRAW_LIBRARY_PATH ~/envdraw
+
+in your .cshrc or similar startup file.
+
+I recommend adding something similar to the following in whatever
+startup file you normally run for STk.
+
+(autoload "SOME_PATH/view.stk" view)
+(autoload "SOME_PATH/meta.stk" envdraw)
+
+Whatever method you use, make sure that the files are loaded and
+everything should work.

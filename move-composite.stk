@@ -1,0 +1,370 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: move-composite.stk 1.2 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                   TK-MOVEABLE-COMPOSITE-WIDGET
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; A child canvas group is designed to organize acyclic tree structures
+;; into a composite widget capable of being given simple instructions
+;; about how to allow each widget to be moved while keeping the
+;; organization of the graph intact.  Specifically, each widget is
+;; has a list of functions which are called when the widget moves.
+;; Each widget keeps track of its children and a parent.  A widget
+;; may only have one parent and cycles are not allowed.
+
+;; The way these are used in the box and pointer diagrams are as follows:
+;; each time a pointer between two widgets is added, a function is added
+;; to both the parent and the child of the pointer.  There are two motion
+;; bindings.  One which moves the widget and all of its children, and one
+;; which moves only the widget.  For the motion hook which moves all the
+;; children, a function to notify the child is not neccesary, since it
+;; has already moved.  Each child widget is notified with a list of
+;; widgets which already moved, so each child widget calls its notify
+;; functions to see if the parent moved and the child didn't or the child
+;; moved and the parent didn't.
+
+(unless (provided? "move-composite")
+
+(define-class <Tk-moveable-composite-item> (<Tk-composite-item>)
+  ((myparent    :initform #f)  ;; the parent tmci (may only have one--acyclic)
+   (mywidgets   :initform '()) ;; widgets belonging to me
+   (chwidgets   :initform '()) ;; a list of child widgets
+   (par-wid-fns :initform '()) ;; functions to notify other widgets of motion
+   ccg                         ;; child canvas group
+   sentinel                    ;; used for getting precise position, fill, etc.
+   (coords      :allocation :virtual
+		:slot-set! (lambda (o w)
+			     (slot-set! o 'lastx (car w))
+			     (slot-set! o 'lasty (cadr w)))
+		:slot-ref (lambda (o) (list (slot-ref o 'lastx)
+					    (slot-ref o 'lasty))))
+   (fill        :allocation :virtual
+		:slot-set! (lambda (w o)
+			     (slot-set! (sentinel-of w)'fill o))
+		:slot-ref (lambda (w)
+			    (slot-ref (sentinel-of w) 'fill)))
+   (lastx       :initform  0)
+   (lasty       :initform  0)))
+
+(define-method raise((self <tk-moveable-composite-item>)) '())
+
+;; to avoid the confusion of Tk widgets calling canvases parents and other
+;; weird naming conentions, there are selectors for some of the more commonly
+;; accessed fields
+
+(define-method canvas-of((self <Tk-moveable-composite-item>))
+  (slot-ref self 'parent))
+
+(define-method tmci-widget?((self <tk-moveable-composite-item>)) #t)
+(define-method tmci-widget?((self <top>)) #f)
+
+;; Each widget must have a sentinel widget which is a normal Tk-canvas-item.
+;; This widget is used to query the actual coordinates of the object, so
+;; whatever widget is used, the first two coordinates returned by its
+;; 'coords slot will be the same as the the sentinel.
+
+(define-method set-sentinel!((self <tk-moveable-composite-item>) o)
+  (slot-set! self 'sentinel o))
+
+(define-method sentinel-of((self <tk-moveable-composite-item>))
+  (slot-ref self 'sentinel))
+
+;; The convention I have used for the 'myparent slot is that it is either
+;; a tmci-widget that is its parent or #f if it has none.
+
+(define-method set-parent!((self <tk-moveable-composite-item>) o)
+  (slot-set! self 'myparent o))
+
+(define-method parent-of((self <tk-moveable-composite-item>))
+  (slot-ref self 'myparent))
+
+;; This returns a list of widgets which belong to this composite widget.
+
+(define-method widgets-of((self <tk-moveable-composite-item>))
+  (slot-ref self 'mywidgets))
+
+;; This returns a list of all the child tmci widgets of this composite widget.
+
+(define-method child-widgets-of((self <tk-moveable-composite-item>))
+  (slot-ref self 'chwidgets))
+
+;; An auxiliary canvas group is created to which all the child groups are
+;; added each time one tmci-group is added as a child to another.
+
+(define-method child-canvas-group-of((self <tk-moveable-composite-item>))
+  (slot-ref self 'ccg))
+
+;; This returns the actual canvas ID of a canvas-item.  These are used by
+;; Tk to identify canvas-groups.
+
+(define-method canvas-id-of((self <tk-canvas-item>))
+  (slot-ref self 'cid))
+
+;; This returns the coordinates of the Tk item.  Before querying a tmci
+;; for its coordinates, you must set its position precisely, with
+;; set-precise-position.  Note that the internal lastx and lasty
+;; will not always be correct, this is because only relative motion is
+;; used to keep track of movement.  This way a group can move without
+;; updating every one of its children's coordinates.
+
+(define-method set-precise-position((self <tk-moveable-composite-item>))
+  (slot-set! self 'coords (first-two (coords-of (sentinel-of self))))
+  self)
+
+(define-method coords-of((self <tk-canvas-item>))
+  (slot-ref self 'coords))
+
+(define-method coords-of((self <tk-moveable-composite-item>))
+  (list (slot-ref self 'lastx) (slot-ref self 'lasty)))
+
+(define-method x-coord((self <tk-moveable-composite-item>))
+  (slot-ref self 'lastx))
+
+(define-method y-coord((self <tk-moveable-composite-item>))
+  (slot-ref self 'lasty))
+
+;; These are the three motion hooks.  Start move only sets the position
+;; of the mouse pointer, so that when it begins to move it can measure
+;; relative motion and notify everything how far it moved.
+
+(define (tmci-start-move w x y)
+  (slot-set! w 'lastx x)
+  (slot-set! w 'lasty y))
+
+;; The canvas cleanflag is set when a widget has moved.
+
+(define (tmci-stop-motion w x y)
+  (set-cleanflag! (canvas-of w) #f))
+
+;; tmci-motion is the motion-hook which moves the widget and each of its
+;; children.
+
+(define (tmci-motion w x y)
+  (let* ((chwidgets (cons w (child-widgets-of w)))
+	 (dx (- x (slot-ref w 'lastx)))
+	 (dy (- y (slot-ref w 'lasty))))
+    (for-each
+     (lambda (wid)
+       (notify-of-movement wid chwidgets dx dy))
+     chwidgets)
+    (slot-set! w 'lastx x)
+    (slot-set! w 'lasty y)))
+
+;; tmci-single-motion only moves the widget which is selected, not its children
+
+(define (tmci-single-motion w x y)
+  (notify-of-movement w (list w)
+		      (- x (slot-ref w 'lastx))
+		      (- y (slot-ref w 'lasty)))
+  (slot-set! w 'lastx x)
+  (slot-set! w 'lasty y))
+
+;; move-tmci moves a widget (and its children) AS IF the mouse had dragged it
+;; a distance dx and dy.  this is great for setting relative distances
+;; between two objects.  This is how build-tree places the box-and-pointers.
+
+(define (move-tmci w . args)
+  (let* ((point (if (null? (cdr args)) (car args) args))
+	 (dx (x-coord point))
+	 (dy (y-coord point)))
+    (set-precise-position w)
+    (let ((can (slot-ref (canvas-of w) 'Id)))
+      (can 'move (canvas-id-of (child-canvas-group-of w)) dx dy)
+      (apply tmci-motion w (+ (coords-of w) (list dx dy))))))
+
+(define (move-single-tmci w . args)
+  (let* ((point (if (null? (cdr args)) (car args) args))
+	 (dx (x-coord point))
+	 (dy (y-coord point)))
+    (set-precise-position w)
+    (let ((can (slot-ref (canvas-of w) 'Id)))
+      (can 'move (canvas-id-of w) dx dy)
+      (apply tmci-single-motion w (+ (coords-of w) (list dx dy))))))
+
+;; Notify-of-movement takes a tmci-widget, a list of tmci-widgets which already
+;; moved (the children, if tmci-motion, otherwise only itself) and a distance.
+;; It calls each function with the list and the distance, should a function
+;; ever return 'delete-me, it will delete the function from the list.
+;; This will probably change soon, since pointer-motion-hooks can tell
+;; whether they are being called from their parent or child.
+
+(define (notify-of-movement self already-moved dx dy)
+  (for-each
+   (lambda (fn)
+     ((car fn) already-moved dx dy))
+   (slot-ref self 'par-wid-fns)))
+
+;; The initialize-item method for tmci widgets binds the widget for
+;; dragging with button 1 for it and its children and button 2 for
+;; only it.  It also sets the child-canvas-group.
+
+(define-method initialize-item((self <Tk-moveable-composite-item>)
+ 			       canvas coords args)
+  (let* ((canv (canvas-of self))
+	 (ccg (make <Canvas-group> :parent canv)))
+    (slot-set! self 'ccg ccg)
+    (envdraw-bind-for-dragging canv
+		       :tag (canvas-id-of ccg)
+		       :only-current #f
+		       :use-instance self
+		       :button 1
+		       :start tmci-start-move
+		       :after-motion tmci-motion
+		       :stop tmci-stop-motion)
+    (envdraw-bind-for-dragging canv
+		       :tag (canvas-id-of self)
+		       :only-current #f
+		       :use-instance self
+		       :button 2
+		       :start tmci-start-move
+		       :after-motion tmci-single-motion
+		       :stop tmci-stop-motion)
+    (canvas-id-of self)))
+
+;; add-group-to-tmci-group adds a child to the canvas-groups of a parent.
+
+(define (add-group-to-tmci-group par child)
+  (unless (or (memq par (child-widgets-of child))
+	      (parent-of child) (eq? par child))
+    (define (really-add par child)
+      (let ((ccg (child-canvas-group-of par)))
+	(for-each
+	 (lambda (x) (apply add-to-group ccg (items-of-group x)))
+	 (child-widgets-of child))
+	(slot-set! par 'chwidgets
+		   (cons child
+			 (append (child-widgets-of child)
+				 (child-widgets-of par))))
+	(apply add-to-group ccg
+	       (items-of-group (child-canvas-group-of child)))
+	(let ((parent (parent-of par)))
+	  (if parent (really-add parent child)))))
+    (really-add par child)
+    (set-parent! child par)))
+
+;; add-to-tmci-group adds a single widget to a group.
+
+(define (add-to-tmci-group obj item)
+  (define (add-to-tmci-group-internal obj item)
+    (add-to-group (child-canvas-group-of obj) item)
+    (let ((parent (parent-of obj)))
+      (if parent (add-to-tmci-group-internal parent item))))
+  (slot-prepend! obj 'mywidgets item)
+  (add-tag item (canvas-id-of obj))
+  (add-tag item (canvas-id-of (child-canvas-group-of obj)))
+  (when (parent-of obj)
+    (add-to-tmci-group-internal obj item)))
+
+;; remove-group-from-parent removes an item from its parent and
+;; each of its parent's parents.
+
+(define (remove-group-from-parent item)
+  (let ((child-items (items-of-group (child-canvas-group-of item)))
+	(child-widgets (cons item (child-widgets-of item))))
+    (define (remove-from-parent par)
+      (slot-set! par 'chwidgets
+		 (filter
+		  (lambda (x) (not (memq x child-widgets)))
+		  (child-widgets-of par)))
+      (for-each
+       (lambda (x) (delete-tag x (canvas-id-of (child-canvas-group-of par))))
+       child-items)
+      (if (parent-of par)
+	  (remove-from-parent (parent-of par))))
+    (if (parent-of item)
+	(remove-from-parent (parent-of item)))
+    (set-parent! item #f)))
+
+
+;; My own bind-for-dragging, based on the library version, but
+;; different in accepting a :use-instance INSTANCE keyword argument,
+;; which causes mouse-events to only trigger a drag if pressed on
+;; intance, calls the hooks with instance, and still drags all members
+;; of tag.
+
+(define-generic envdraw-bind-for-dragging)
+(let ()
+  (define last-x 0)
+  (define last-y 0)
+  (define instance-selected '())
+
+  (define (start-drag instance x y closure tag ui)
+    (let ((tag (or tag (car ((slot-ref instance 'Id) 'find 'with 'current)))))
+      (delete-tag instance 'selected)
+      (add-tag instance 'selected 'with tag)
+      (raise instance 'selected)
+      (set! last-x x)
+      (set! last-y y)
+      (set! instance-selected (or ui (Cid->instance instance tag)))
+      ;; Apply user :start hook
+      (if closure
+	  (closure instance-selected x y))))
+
+  (define (motion-drag instance x y before after)
+    (let ((continue #t))
+      ;; Apply user :before-motion hook
+      (if before
+	  (set! continue (before instance-selected x y)))
+      (when continue
+	(move instance 'selected (- x last-x) (- y last-y))
+	(set! last-x x)
+	(set! last-y y)
+	;; Apply user :after-motion hook
+	(if after
+	    (after instance-selected x y)))))
+
+  (define (fast-motion-drag instance x y)
+    (move instance 'selected (- x last-x) (- y last-y))
+    (set! last-x x)
+    (set! last-y y))
+
+  (define (stop-drag instance x y closure)
+    (delete-tag instance 'selected)
+    ;; Apply user :stop hook
+    (if closure
+	(closure instance-selected x y)))
+
+  (add-method envdraw-bind-for-dragging (method ((self <Canvas>) . args)
+    (let* ((Id     (slot-ref self 'Id))
+	   (who    (tag-value (get-keyword :tag args 'all)))
+	   (but    (get-keyword :button args 1))
+	   (mod    (get-keyword :modifier args ""))
+	   (alone  (get-keyword :only-current args #t))
+	   (str    (if (equal? mod "") "" (string-append mod "-")))
+	   (ui     (get-keyword :use-instance args #f))
+	   (start  (get-keyword :start args #f))
+	   (before (get-keyword :before-motion args #f))
+	   (after  (get-keyword :after-motion args (get-keyword :motion args #f)))
+	   (stop   (get-keyword :stop args #f))
+	   (bwho   (if ui (tag-value ui) who)))
+
+      ;; Start binding
+      (bind self bwho (format #f "<~AButtonPress-~A>" str but)
+	    (lambda (x y) (start-drag self x y start (if alone #f who) ui)))
+      ;; Motion binding
+      (bind self bwho (format #f "<~AB~A-Motion>" str but)
+	    (if (or before after)
+		(lambda (x y) (motion-drag self x y before after))
+		;; Provide a faster motion handler
+		(lambda (x y) (fast-motion-drag self x y))))
+      ;; Stop binding
+      (bind self bwho (format #f "<~AButtonRelease-~A>" str but)
+	    (lambda (x y) (stop-drag self x y stop)))))))
+
+(provide "move-composite")
+
+)

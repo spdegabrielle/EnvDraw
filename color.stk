@@ -1,0 +1,88 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: color.stk 1.2 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;                          COLORS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; This file provides functions which allow for a more convenient
+;; representation of colors than the standard Tk color representation.
+;; Tk allows both standard X11 color names and hex values of the form
+;; #rrggbb where rr gg and bb are the red green and blue hex values from
+;; 00 to ff.  The representation this file provides is a vector of
+;; 3 values.  (WIDGET-COLOR WIDGET) returns the color of WIDGET, where
+;; it is assumed that the color is accessed through the tk-virtual slot
+;; named 'fill.  Other selectors could be made for background, foreground,
+;; activeColor, or whatever.  To convert a color back to a Tk-friendly
+;; form, use (ASHEX COLOR), so when specifying a fill for a new widget,
+;; do something like :fill (ASHEX COLOR).  There are also
+;; (SET-WIDGET-COLOR! WIDGET COLOR) and LIGHTEN-COLOR and DARKEN-COLOR, which
+;; set a color directly (via the 'fill slot), and lighten or darken a color
+;; by 50 points.  Finally, there is (MAKE-COLOR-SETTER TOPLEV COLOR) which
+;; returns a function which will set the 'color slot of TOPLEV to COLOR,
+;; which is used to change the default color
+
+(unless (provided? "color")
+
+(define (make-color r g b)
+  (vector r g b))
+
+(define (asHex color)
+  (format #f "#~A~A~A" (dec->hex (vector-ref color 0))
+	               (dec->hex (vector-ref color 1))
+		       (dec->hex (vector-ref color 2))))
+
+(define (complementAsHex color)
+  (format #f "#~A~A~A" (dec->hex (- (vector-ref color 0) 10))
+	               (dec->hex (- (vector-ref color 1) 10))
+		       (dec->hex (- (vector-ref color 2) 10))))
+
+(define (widget-color w)
+  (let ((s (slot-ref w 'fill)))
+    (make-color (hex->dec (substring s 1 3))
+		(hex->dec (substring s 3 5))
+		(hex->dec (substring s 5 7)))))
+
+;; this only works for small numbers, but that's all I need
+(define (dec->hex n)
+  (string-append (number->string (quotient n 16) 16)
+		 (number->string (modulo n 16) 16)))
+
+(define (hex->dec h)
+  (string->number h 16))
+
+(define (set-widget-color! w color)
+  (slot-set! w 'fill (asHex color)))
+
+(define (darken-widget! w p)
+  (set-widget-color! w (darken-color (color-of p))))
+
+(define (lighten-widget! w p)
+  (set-widget-color! w (color-of p)))
+
+(define (darken-color color)
+  (apply vector (map (lambda (x) (max 20 (- x 50))) (vector->list color))))
+
+(define (lighten-color color)
+  (apply vector (map (lambda (x) (min 255 (+ x 50))) (vector->list color))))
+
+(define (make-color-setter toplev color)
+  (lambda ()
+    (slot-set! toplev 'color color)))
+
+(provide "color")
+
+)

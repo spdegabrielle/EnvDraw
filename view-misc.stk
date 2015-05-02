@@ -1,0 +1,194 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: view-misc.stk 1.2 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;                           MISC
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(unless (provided? "view-misc")
+
+(define-method lower ((self <Tk-canvas-item>) . below)
+  (apply (slot-ref self 'Id) 'lower (slot-ref self 'Cid)
+	 (stk::map tag-value below))
+  self)
+
+(define-method raise ((self <Tk-canvas-item>) . above)
+  (apply (slot-ref self 'Id) 'raise (slot-ref self 'Cid)
+	 (stk::map tag-value above))
+  self)
+
+(define (safely-format o)
+  (format #f "~A" (safen-list o)))
+
+(define (safen-list o)
+  (define (circulate obj prev)
+    (cond ((atom? obj) obj)
+	  ((memq obj prev) '(...))
+	  (else (cons (circulate (car obj) (cons obj prev))
+		      (circulate (cdr obj) (cons obj prev))))))
+  (circulate o '()))
+
+(define (safe-list? x)
+  (list? (safen-list x)))
+
+(define (tree? l) (not (safe-list? l)))
+
+(define (atom? l) (not (pair? l)))
+
+(define (last l)
+  (list-ref l (- (length l) 1)))
+
+(define (first-two l)
+  (list (car l) (cadr l)))
+
+(define (last-two l)
+  (define (sub l)
+    (if (null? l)
+	2
+	(let ((it (sub (cdr l))))
+	  (if (number? it)
+	      (if (= it 0)
+		  (cdr l)
+		  (- it 1))
+	      it))))
+  (sub l))
+
+(define-method destroyed-object?((o <destroyed-object>)) #t)
+(define-method destroyed-object?((o <top>)) #f)
+
+(define-method safe-destroy(w)
+  (if (not (destroyed-object? w))
+      (destroy w)))
+
+(define (print-canvas . file)
+  (let* ((canv (canvas-of *view-root*))
+	 (bbox (bounding-box canv 'all))
+	 (realfile (if (null? file)
+		   (format #f "/tmp/view~A.ps" (gensym "_can"))
+		   (car file))))
+    ((id canv) 'postscript
+	       :pagewidth "8i"
+	       :rotate 1
+	       :x (car bbox)
+	       :y (cadr bbox)
+	       :width (- (caddr bbox) (car bbox))
+	       :height (- (cadddr bbox) (cadr bbox))
+	       :file realfile)
+    (if (null? file)
+	(system (format #f (string-append *print-command* " ~A") realfile))))
+  @undefined)
+
+(define (menu-print-command)
+  (format #t "This command is sending a postscript file to the printer ~a, you can print to a file with (print-canvas FILE)\n" *print-command*)
+  (print-canvas))
+
+(define (text-width text . font)
+  (let ((font (if (null? font) MEDIUM_FONT (car font))))
+    (canvas ".text-width")
+    (define bbox
+      (.text-width 'bbox
+		   (.text-width 'create 'text 0 0 :text text :font font)))
+    (destroy .text-width)
+    (- (caddr bbox) (car bbox))))
+
+(define (text-height font)
+  (canvas ".text-width")
+  (define bbox
+    (.text-width 'bbox (.text-width 'create 'text 0 0 :text ")" :font font)))
+  (destroy .text-width)
+  (- (cadddr bbox) (cadr bbox)))
+
+(define (atom-offset dtype? car-or-cdr?)
+  (if dtype?
+      '(0 0)
+      (if (eq? car-or-cdr? 'car)
+	  (list (* -0.5 CELL_SIZE) (* 0.15 CELL_SIZE))
+	  (list (* -0.5 CELL_SIZE) (* 0.5 CELL_SIZE)))))
+
+(define (remove p l)
+  (cond ((null? l) l)
+	((eqv? p (car l)) (remove p (cdr l)))
+	(else (cons (car l) (remove p (cdr l))))))
+
+(define (filter pred l)
+  (let loop ((l l))
+    (cond ((null? l) '())
+	  ((pred (car l)) (cons (car l) (loop (cdr l))))
+	  (else (loop (cdr l))))))
+
+(define (slot-append! o slot l)
+  (slot-set! o slot (append (slot-ref o slot) l)))
+
+(define (slot-prepend! o slot thing)
+  (slot-set! o slot (cons thing (slot-ref o slot))))
+
+(define (slot-remove! o slot thing)
+  (slot-set! o slot (remove thing (slot-ref o slot))))
+
+(define-method lower ((self <Tk-canvas-item>) . below)
+  (apply (slot-ref self 'Id) 'lower (slot-ref self 'Cid)
+	 (stk::map tag-value below))
+  self)
+
+(define-method raise ((self <Tk-canvas-item>) . above)
+  (apply (slot-ref self 'Id) 'raise (slot-ref self 'Cid)
+	 (stk::map tag-value above))
+  self)
+
+(define-macro (prepend! val sym)
+  `(set! ,sym (cons ,val ,sym)))
+
+(define-macro (remove! val sym)
+  `(set! ,sym (remove ,val ,sym)))
+
+(define (true? x) (and x (boolean? x)))
+
+(define (make-car-half parent color)
+  (make <rectangle>         ;; car half of the cell
+	:parent parent
+	:coords (append CAR_OFFSET (+ CAR_OFFSET (list CELL_SIZE CELL_SIZE)))
+	:fill (ashex color)))
+
+(define (make-cdr-half parent color)
+  (make <rectangle>         ;; cdr half of the cell
+	:parent parent
+	:coords (append CDR_OFFSET (+ CDR_OFFSET (list CELL_SIZE CELL_SIZE)))
+	:fill (ashex color)))
+
+(define (shading-coords-cell coords)
+  (append (- coords (list (* 1.4 CELL_SIZE) (* 0.4 CELL_SIZE)))
+	  (+ coords (list (* 1.4 CELL_SIZE) (* 1.4 CELL_SIZE)))))
+
+(define (shading-coords-atom coords width)
+  (append (- coords (list (+ (1/2 width) 3) 8))
+	  (+ coords (list (+ (1/2 width) 6) 18))))
+
+(define (avg . args)
+  (if (null? args)
+      (error "no args")
+      (let loop ((args args)
+		 (total 0)
+		 (count 0))
+	(if (null? args)
+	    (/ total count)
+	    (loop (cdr args) (+ total (car args)) (+ count 1))))))
+
+(define (1/2 x) (/ x 2))
+(define (-1/2 x) (/ x -2))
+
+(provide "view-misc")
+
+)

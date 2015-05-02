@@ -1,0 +1,237 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: view-classes.stk 1.2 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;                       VIEWED-OBJECT
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(unless (provided? "view-classes")
+
+(define-generic profile)
+(define-generic gc-flag-of)
+
+(define-class <viewed-object> (<tk-moveable-composite-item>)
+  ((gc-flag  :getter gc-flag-of :initform #f)
+   (ptrs2me  :getter pointers-to :initform '())
+   (profile  :getter profile)
+   (pointers :getter pointers-of :initform '())
+   (obj      :getter scheme-object-of)))
+
+
+(define-method width-of((self <viewed-object>))
+  (* 2 CELL_SIZE))
+
+(define-method height-of((self <viewed-object>))
+  CELL_SIZE)
+
+(define-method color-of((self <viewed-object>))
+  (make-color 0 0 0))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;                        NULL-OBJECT
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-class <null-object> (<tk-moveable-composite-item>)
+  ((ptrs2me :allocation :virtual
+	    :slot-set! (lambda (o w) #t)
+	    :slot-ref (lambda (o) '()))
+   (gc-flag :allocation :virtual
+	    :slot-set! (lambda (o w) #t)
+	    :slot-ref (lambda (o) #f))))
+
+(define-method gc-flag-of((self <null-object>)) #f)
+(define-method pointers-to((self <null-object>)) '())
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;                        VIEWED-CELL
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-class <viewed-cell> (<tk-moveable-composite-item>)
+  ((gc-flag  :getter gc-flag-of :initform #f)
+   (color    :getter color-of)
+   (ptrs2me  :getter pointers-to :initform '())
+   (pointers :getter pointers-of :initform '())
+   (body     :getter body-of)
+   (obj      :getter scheme-object-of)
+   (carchild :getter carchild-of)
+   (cdrchild :getter cdrchild-of)
+   (profile  :getter profile)))
+
+(define-method width-of((self <viewed-cell>))
+  (xsize (profile self)))
+
+(define-method height-of((self <viewed-cell>))
+  (ysize (profile self)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;                           MISC DEFINITIONS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-method profile((o <null-object>)) ZERO-PROFILE)
+
+(define-method viewed-cell?((o <viewed-cell>)) #t)
+(define-method viewed-cell?((o <top>)) #f)
+
+(define-method viewed-object?((o <viewed-object>)) #t)
+(define-method viewed-object?((o <top>)) #f)
+
+(define-method null-object?((o <null-object>)) #t)
+(define-method null-object?((o <top>)) #f)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;                       INITIALIZE-DEFINITIONS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;;; to make a viewed-cell, the following keywords must be
+;;; supplied, :carchild, :cartype, :cdrchild,
+;;; :cdrtype, :color, and :toplev
+
+(define-method initialize-item((self <viewed-cell>) canvas coords args)
+  ;; currently this completely ignores the coordinates given, because
+  ;; it really doesn't know the coordinates until long after each
+  ;; instance has been initialized.
+  (next-method)
+  (let* ((tl (get-keyword :tl args))
+	 (parent (canvas-of self))
+	 (cdrchild (get-keyword :cdrchild args))
+	 (carchild (get-keyword :carchild args))
+	 (cartype (get-keyword :cartype args))
+	 (cdrtype (get-keyword :cdrtype args))
+	 (color (get-keyword :color args))
+	 (carh (lower (make-car-half parent color)))
+	 (cdrh (lower (make-cdr-half parent color))))
+    (set-sentinel! self cdrh)
+    (set-parent! self #f)
+    (slot-set! self 'carchild carchild)
+    (slot-set! self 'cdrchild cdrchild)
+    (slot-set! self 'body (list carh cdrh))
+    (slot-set! self 'color color)
+    (add-to-tmci-group self carh)
+    (add-to-tmci-group self cdrh)
+    (cond ((null-object? carchild)
+	   (slot-prepend! self 'pointers (cons 'car '())))
+	  ((procedure-object? carchild)
+	   (let ((carpointer (make <cell-to-proc-pointer>
+				   :parent self
+				   :child carchild))
+		 (carp (raise (make-car-pointer parent '(0 0) (list PROCEDURE_DIAMETER 0) color))))
+	     (slot-prepend! self 'pointers (cons 'car carpointer))
+	     (slot-set! carpointer 'pwid carp)
+	     (slot-prepend! carchild 'ptrs2me carpointer)
+	     (add-to-tmci-group self carp)))
+	  ((viewed-cell? carchild)
+	   (let ((carpointer (make <cell-pointer>
+				   :car-or-cdr 'car
+				   :parent self
+				   :child carchild
+				   :type cartype))
+		 (carp (raise (make-car-pointer parent '(0 0) '(0 0) color))))
+	     (slot-prepend! self 'pointers (cons 'car carpointer))
+	     (slot-set! carpointer 'pwid carp)
+	     (slot-prepend! carchild 'ptrs2me carpointer)
+	     (add-to-tmci-group self carp)))
+	  (else (let ((carpointer (make <atom-pointer>
+					:parent self
+					:child carchild))
+		      (carp (raise (make-car-pointer parent '(0 0) '(0 0) color))))
+		  (slot-prepend! self 'pointers (cons 'car carpointer))
+		  (slot-set! carpointer 'pwid carp)
+		  (slot-prepend! carchild 'ptrs2me carpointer)
+		  (add-to-tmci-group self carp))))
+    (cond ((null-object? cdrchild)
+	   (slot-prepend! self 'pointers (cons 'cdr '())))
+	  ((procedure-object? cdrchild)
+	   (let ((cdrpointer (make <cell-to-proc-pointer>
+				   :parent self
+				   :child cdrchild))
+		 (cdrp (raise (make-cdr-pointer parent '(0 0) (list PROCEDURE_DIAMETER 0) color))))
+	     (slot-prepend! self 'pointers (cons 'cdr cdrpointer))
+	     (slot-set! cdrpointer 'pwid cdrp)
+	     (slot-prepend! cdrchild 'ptrs2me cdrpointer)
+	     (add-to-tmci-group self cdrp)))
+	  ((viewed-cell? cdrchild)
+	   (let ((cdrpointer (make <cell-pointer>
+				   :car-or-cdr 'cdr
+				   :parent self
+				   :child cdrchild
+				   :type cdrtype))
+		 (cdrp (raise (make-cdr-pointer parent '(0 0) '(0 0) color))))
+	     (slot-prepend! self 'pointers (cons 'cdr cdrpointer))
+	     (slot-set! cdrpointer 'pwid cdrp)
+	     (slot-prepend! cdrchild 'ptrs2me cdrpointer)
+	     (add-to-tmci-group self cdrp)))
+	  (else (let ((cdrpointer (make <atom-pointer>
+					:parent self
+					:child cdrchild))
+		      (cdrp (raise (make-cdr-pointer parent '(0 0) '(0 0) color))))
+		  (slot-prepend! self 'pointers (cons 'cdr cdrpointer))
+		  (slot-set! cdrpointer 'pwid cdrp)
+		  (slot-prepend! cdrchild 'ptrs2me cdrpointer)
+		  (add-to-tmci-group self cdrp))))
+    (bind-for-entrance self tl (scheme-object-of self))
+    (bind-for-gc self tl)
+    (canvas-id-of self)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;                              ATOMS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-method initialize-item((self <viewed-object>) canvas coords args)
+  (slot-set! self 'Cid (gensym "vo"))
+  (next-method)
+  (let* ((parent (canvas-of self))
+	 (tl (get-keyword :tl args))
+	 (obj (get-keyword :obj args))
+	 (tx (format #f "~A" obj))
+	 (item (make <text-item> :text tx
+		     :parent parent :font MEDIUM_FONT
+		     :coords coords :anchor "n")))
+    (slot-set! self 'chwidgets '())
+    (slot-set! self 'mywidgets '())
+    (slot-set! self 'pointers '())
+    (slot-set! self 'ptrs2me '())
+    (slot-set! self 'par-wid-fns '())
+    (set-parent! self #f)
+    (slot-set! self 'profile (list (max CELL_SIZE (text-width obj))
+				   CELL_SIZE 0 '(0 0) '(0 0)))
+    (set-sentinel! self item)
+    (slot-set! self 'obj obj)
+    (add-to-tmci-group self item)
+    (bind-for-gc self tl)
+    (bind-for-entrance self tl tx)
+    (canvas-id-of self)))
+
+(define (make-viewed-object tl coords obj)
+  (make <viewed-object> :parent (canvas-of tl) :coords coords :obj obj :tl tl))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;                          EMPTY-LISTS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-method initialize-item((self <null-object>) canvas coords args)
+  (slot-set! self 'Cid (gensym "no"))
+  (next-method)
+  (let ((item (make <line>
+		    :parent (canvas-of self)
+		    :coords (append '(0 0) (- CELL_X CELL_Y))))
+	(Cid (gensym "no")))
+    (slot-set! self 'mywidgets '())
+    (set-sentinel! self item)
+    (canvas-id-of self)))
+
+(provide "view-classes")
+
+)

@@ -1,0 +1,299 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: view-profiles.stk 1.2 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                           PROFILES
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; a profile is a list of 5 values,
+;; 1: the width of the entire structure(x dir)
+;; 2: the height of the entire structure(y dir)
+;; 3: the displacement of the cell along the top of the area.
+;; 4: the position of the car data, pair of x,y displacements
+;; 5: the position of the cdr data, from the cell itself to the
+;;    next profile origin
+
+;;           xsize
+;;      <--------------------------->
+;;          xpos
+;;      <------------>
+;;      - - - - -  ---*---  - - - - -
+;;    y |          |     |          |
+;;    s |          -------          |
+;;    i |           /   \           |
+;;    z |          /     \          |
+;;    e |         /       \         |
+;;      |     carpos     cdrpos     |
+;;
+;; * is the coordinates returned by (coords-of cell)
+
+(unless (provided? "view-profiles")
+
+(define (xsize prof)
+  (list-ref prof 0))			; x displacement of a profile
+(define (ysize prof)
+  (list-ref prof 1))			; y displacement of a profile
+(define (xpos prof)
+  (list-ref prof 2))			; amount which cell is displaced
+					; in x direction, it will always
+					; be 0 in the y direction.
+(define (carpos prof)
+  (list-ref prof 3))
+(define (cdrpos prof)
+  (list-ref prof 4))
+
+(define ZERO-PROFILE (list 0 0 0 (list 0 0) (list 0 0)))
+
+(define (set-scale! new)
+  (set! SCALE new))
+
+;; Setting coordinates
+
+(define CELL_X 0)
+(define CELL_Y 0)
+(define CAR_OFFSET 0)
+(define CDR_OFFSET 0)
+(define CDRP_OFFSET 0)
+(define CARP_OFFSET 0)
+(define CARP_TOP_CORR 0)
+(define CARP_SIDE_CORR 0)
+(define CDRP_TOP_CORR 0)
+(define CDRP_SIDE_CORR 0)
+
+(define (set-cell-size! new)
+  (set! CELL_SIZE new)
+  (set! CELL_X (list CELL_SIZE 0))             ;; the basis
+  (set! CELL_Y (list 0 CELL_SIZE))             ;; vectors
+  (set! CAR_OFFSET (* -1 CELL_X))              ;; offset of the rectangles
+  (set! CDR_OFFSET (list 0 0))                 ;; which draw each cell half
+  (set! CDRP_OFFSET                            ;; from origin to head of
+	(* 0.5 (list CELL_SIZE CELL_SIZE)))    ;; the pointer arrows
+  (set! CARP_OFFSET
+	(+ (* -0.5 CELL_X) (* 0.5 CELL_Y)))
+  (set! CARP_TOP_CORR (* -1 CARP_OFFSET))      ;; undoes the offset at the
+  (set! CARP_SIDE_CORR (* -0.5 CELL_Y))        ;; pointer's destination
+  (set! CDRP_TOP_CORR (* -1 CDRP_OFFSET))      ;; these depend on which
+  (set! CDRP_SIDE_CORR (* -1.5 CELL_X)))       ;; display-type the pointer is
+
+(set-cell-size! CELL_SIZE)
+
+;; add profiles
+
+;; takes two profiles and boolean describing layout, and returns total
+;; profile.  #t indicates tree, #f indicates normal layout.  This is the
+;; main part of the algorithm which lays out cells each time view is
+;; called, or for new objects drawn by set! or set-cxr!.  It fits the
+;; two profiles of the car and cdr of a cell together and returns the
+;; profile which tells build-tree how far to separate the children from
+;; their parent.
+
+(define (add-profiles carprof cdrprof istree?)
+  (let ((DEFAULT_LENGTH (* 2 SCALE))
+	(DEFAULT_SPACING SCALE)
+	(carwidth  (xsize carprof))
+	(carheight (ysize carprof))
+	(cdrwidth  (xsize cdrprof))
+	(cdrheight (ysize cdrprof))
+	(caroffset (xpos carprof))
+	(cdroffset (xpos cdrprof)))
+    (if istree?
+	(let ((position (max DEFAULT_LENGTH carwidth)))
+	  (list (+ DEFAULT_SPACING
+		   (max (* 2 DEFAULT_LENGTH) (+ carwidth cdrwidth)))
+		(+ DEFAULT_LENGTH (max carheight cdrheight))
+		(+ position (1/2 DEFAULT_SPACING))
+		(list (- caroffset position) DEFAULT_LENGTH)
+		(list (max cdroffset DEFAULT_LENGTH) DEFAULT_LENGTH)))
+	(let ((offsetcar? (and (>= (- carwidth caroffset) (* DEFAULT_LENGTH 2))
+			       (<= DEFAULT_LENGTH cdrheight))))
+	  (list (+ DEFAULT_LENGTH DEFAULT_SPACING cdrwidth caroffset)
+		(if offsetcar?
+		    (+ carheight cdrheight)
+		    (max cdrheight (+ DEFAULT_LENGTH carheight)))
+		caroffset
+		(list 0 (if offsetcar?
+			    cdrheight
+			    DEFAULT_LENGTH))
+		(list (+ DEFAULT_LENGTH DEFAULT_SPACING cdroffset) 0))))))
+
+;; Build tree takes a toplevel to draw new cells on, an object to draw, and
+;; the predicate which describes how to draw them.  It returns either #f
+;; if no new cells were created or the root cell which corresponds to the
+;; object being drawn.  It will be at coordinates (0 0) when returned, so
+;; whatever calls build-tree must place the cell itself.
+
+;; These are here so it will work when envdraw is not loaded.
+
+(define (false-proc . args) #f)
+
+(define frame-object? false-proc)
+(define compound-procedure? false-proc)
+(define procedure-object? false-proc)
+(define view-continuation? false-proc)
+(define special-form? false-proc)
+
+(define (maybe-set-precise-position o)
+  (if (slot-bound? o 'sentinel)
+      (set-precise-position o)))
+
+;; This is used by view-placement.stk to place new trees near old ones,
+;; it is initialized #f each time build-tree is called.
+
+(define *view-last-previous* #f)
+
+(define (build-tree toplev scheme-obj treepred)
+  (let ((root #f)
+	(canvas (canvas-of toplev))
+	(col (color-of toplev))
+	(ht (table-of toplev)))
+    (set! *view-last-previous* #f)
+    (define (update-root obj)
+      (set! root obj)
+      (set! update-root (lambda (x) #f)))
+    (define (objectify scheme-obj)
+      (cond ((null? scheme-obj)
+	     (let ((it (make <null-object>
+			     :parent canvas
+			     :coords '(0 0))))
+	       (update-root it)
+	       it))
+	    ((not (pair? scheme-obj))
+	     (let ((it (make <viewed-object>
+			     :parent canvas
+			     :tl toplev
+			     :coords '(0 0)
+			     :obj (format #f "~S" scheme-obj))))
+	       (hash-table-put! ht it it)
+	       (update-root it)
+	       it))
+	    ((compound-procedure? scheme-obj)
+	     (list (procedure-object scheme-obj)))
+	    ((or (view-continuation? scheme-obj)
+		 (special-form? scheme-obj))
+	     (let ((it (make <viewed-object>
+			     :parent canvas
+			     :tl toplev
+			     :coords '(0 0)
+			     :obj (format #f "~A" (viewed-rep scheme-obj)))))
+	       (hash-table-put! ht it it)
+	       (update-root it)
+	       it))
+	    ((let ((search (hash-table-get ht scheme-obj #f)))
+	       (if search
+		   (begin
+		     (if (slot-ref search 'gc-flag)
+		       (un-gc search ht))
+		     (if (not *view-last-previous*)
+			 (set! *view-last-previous* search))
+		     (list search))
+		   #f)))
+	    (else
+	     (let* ((display-type (treepred scheme-obj))
+		  (instance
+;; this is a tweaked version of make, it gets vital slots filled and
+;; recorded for its children to find before calling initialize this is
+;; because the initialize requires knowing its children, thus the
+;; initialize call is tree recursive.  This also means that any tree node
+;; which is encountered which has already been created, it will not have
+;; been initialized yet, so these nodes which have already been created
+;; will not have children when they construct a list of their childen.
+		   (let ((it (allocate-instance <viewed-cell> '())))
+		     (slot-set! it 'parent canvas)
+		     (slot-set! it 'obj scheme-obj)
+		     (slot-set! it 'chwidgets '())
+		     (slot-set! it 'mywidgets '())
+		     (slot-set! it 'Cid (gensym "vc"))
+		     (slot-set! it 'profile ZERO-PROFILE)
+		     (slot-set! it 'par-wid-fns '())
+		     (slot-set! it 'lastx 0)
+		     (slot-set! it 'lasty 0)
+		     (slot-set! it 'ptrs2me '())
+		     (slot-set! it 'pointers '())
+		     (slot-set! it 'gc-flag #f)
+		     (set-parent! it #f)
+		     (hash-table-put! ht scheme-obj it)
+		     (update-root it)
+		     (initialize it
+		       (append
+			(list :parent canvas
+			      :coords '(0 0)
+			      :color col
+			      :tl toplev)
+			(let ((car-c (objectify (car scheme-obj))))
+			  (cond ((null? car-c) '(:carchild () :cartype null))
+				((pair? car-c) (list :carchild (car car-c)
+						     :cartype 'already-posted))
+				(else (list :carchild car-c :cartype 'car))))
+			(let ((cdr-c (objectify (cdr scheme-obj))))
+			  (cond ((null? cdr-c) '(:cdrchild () :cdrtype null))
+				((pair? cdr-c) (list :cdrchild (car cdr-c)
+						     :cdrtype 'already-posted))
+				(else (list :cdrchild cdr-c :cdrtype 'cdr))))))
+		     it))
+		  (car-c (carchild-of instance))
+		  (cdr-c (cdrchild-of instance))
+		  (pointers (pointers-of instance))
+		  (car-p (cdr (assoc 'car pointers)))
+		  (cdr-p (cdr (assoc 'cdr pointers)))
+		  (instpro (add-profiles (if (or (null? car-p)
+						 (already-viewed? car-p))
+					     ZERO-PROFILE
+					     (profile car-c))
+					 (if (or (null? cdr-p)
+						 (already-viewed? cdr-p))
+					     ZERO-PROFILE
+					     (profile cdr-c))
+					 display-type)))
+	     (slot-set! instance 'profile instpro)
+	     (unless (or (null? car-p) (already-viewed? car-p))
+	       (add-group-to-tmci-group instance car-c))
+	     (unless (or (null? cdr-p) (already-viewed? cdr-p))
+	       (add-group-to-tmci-group instance cdr-c))
+	     (cond ((null-object? car-c)
+		    (add-to-tmci-group instance (sentinel-of car-c))
+		    (move (sentinel-of car-c) (- CELL_SIZE) CELL_SIZE))
+		   (else (add-prev-motion-hook instance car-p)
+			 (add-motion-hook car-c car-p)
+			 (if (viewed-object? car-c)
+			     (move-tmci car-c
+				    (atom-offset display-type 'car)))
+			 (if (already-viewed? car-p)
+			     (begin (maybe-set-precise-position car-c)
+				    (apply move-head car-p (coords-of car-c)))
+			     (move-tmci car-c (carpos instpro)))))
+	     (cond ((null-object? cdr-c)
+		    (add-to-tmci-group instance (sentinel-of cdr-c))
+		    (move (sentinel-of cdr-c) 0 CELL_SIZE))
+		   (else (add-prev-motion-hook instance cdr-p)
+			 (add-motion-hook cdr-c cdr-p)
+			 (if (viewed-object? cdr-c)
+			     (move-tmci cdr-c
+				    (atom-offset display-type 'cdr)))
+			 (if (already-viewed? cdr-p)
+			     (begin (maybe-set-precise-position cdr-c)
+				    (apply move-head cdr-p (coords-of cdr-c)))
+			     (move-tmci cdr-c (cdrpos instpro)))))
+	     instance))))
+    ;; set the positions properly (this is a time when exact positions
+    ;; are needed, otherwise relative changes are all that is needed)
+    (for-each (lambda (x) (set-precise-position (cdr x)))
+	      (hash-table->list ht))
+    (objectify scheme-obj)
+    root))
+
+(provide "view-profiles")
+
+)

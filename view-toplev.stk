@@ -1,0 +1,284 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: view-toplev.stk 1.2.1.1 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+(require "placement")
+(require "Button")
+
+(unless (and (provided? "view-toplev") (not *debug*))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;                       TOPLEVEL WIDGET
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define PLACEMENT_INITIAL_POSITION (make-point 1000 1000))
+(define VIEW_CANVAS_SIZE '(5000 5000))
+(define VIEW_CANVAS_SIZE_X (car VIEW_CANVAS_SIZE))
+(define VIEW_CANVAS_SIZE_Y (cadr VIEW_CANVAS_SIZE))
+(define VIEW_PLACE_NEAR '(1000 1000 1100 1500))
+(define VIEW_WINDOW_MINSIZE '(400 300))
+(define VIEW_WINDOW_MAXSIZE '(1200 900))
+(define CANVAS_X_SCROLLINC 0)
+(define CANVAS_Y_SCROLLINC 0)
+(define VIEW_BITMAP (format #f "@~a/icons/view" *EnvDraw-library*))
+
+(define FOCUS_MENUENTRY_INDEX 2)
+
+(define (describe-envdraw)
+  (require "dialog")
+  (STk::make-dialog
+   :window '.describeenv
+   :title "About EnvDraw"
+   :text "EnvDraw is a tool for constructing environment and box-and-pointer diagrams with the STk interpreter.  EnvDraw was written by Josh MacDonald <jmacd@cs.berkeley.edu>.  Please report bugs and/or comments by email."
+   :grab #f
+   :default 0
+   :buttons (list (list "Dismiss" (lambda () '()))
+		  (list " Help  " envdraw-help))))
+
+(define (envdraw-help)
+  (STk:show-help-file "envdraw.html"))
+
+(define (update-object-label t obj)
+  (slot-set! (object-label-of t) 'text (safely-format obj)))
+
+(define (bind-for-entrance self tl obj)
+  (bind self "<Enter>" (lambda () (update-object-label tl obj))))
+
+(define (toggle-focus tl)
+  (if (eq? *view-root* tl)
+      (begin
+	(unfocus-toplevel *view-root*)
+	(set! *view-root* #t))
+      (begin
+	(if (view-toplevel? *view-root*)
+	    (unfocus-toplevel *view-root*))
+	(focus-toplevel tl)
+	(set! *view-root* tl))))
+
+(define (focus-toplevel tl)
+  (slot-set! (object-label-of tl) 'background FOCUSED_COLOR)
+  (menu-entry-configure (menu-of tl) FOCUS_MENUENTRY_INDEX :label "Focus"))
+
+(define (unfocus-toplevel tl)
+  (slot-set! (object-label-of *view-root*) 'background UNFOCUSED_COLOR)
+  (menu-entry-configure (menu-of tl) FOCUS_MENUENTRY_INDEX :label "Unfocus"))
+
+(define-class <cleanflag-canvas> (<canvas>)
+  ((clean :initform #t
+	  :getter cleanflag-of
+	  :setter set-cleanflag!)))
+
+(define-class <view-toplevel> (<toplevel>)
+  ((canv           :getter canvas-of)
+   (menu           :getter menu-of)
+   (obj-label      :getter object-label-of)
+   (xscrollbar     :getter xscrollbar-of)
+   (yscrollbar     :getter yscrollbar-of)
+   (startx         :getter scroll-startx-of)
+   (starty         :getter scroll-starty-of)
+   (metro          :getter metropolis-of :initform #f)
+   (syms-alist     :initform '() :getter syms-alist-of)
+   (pred-alist     :initform '())
+   (color          :initform (car COLORS_LIST) :getter color-of)
+   (table          :initform (make-hash-table) :getter table-of)))
+
+(define-method initialize((self <view-toplevel>) initargs)
+  (next-method)
+  (prepend! self *toplevel-views*)
+  (slot-set! self 'title "ObjectView")
+  (slot-set! self 'min-size VIEW_WINDOW_MINSIZE)
+  (slot-set! self 'max-size VIEW_WINDOW_MAXSIZE)
+  (slot-set! self 'geometry VIEW_WINDOW_INITSIZE)
+  (let* ((frame (make <frame>
+		      :parent self
+		      :background MENU_BACKGROUND_COLOR))
+	 (optionframe (make <frame>
+			    :parent frame
+			    :background MENU_BACKGROUND_COLOR))
+	 (menub (make <Menu-Button>
+		      :parent optionframe
+		      :relief 'raised
+		      :text "Options"
+		      :background MENU_BACKGROUND_COLOR
+		      :active-background MENU_ABACKGROUND_COLOR
+		      :foreground MENU_FOREGROUND_COLOR))
+	 (menu (make <Menu>
+		     :parent menub
+		     :activebackground MENU_ABACKGROUND_COLOR
+		     :foreground MENU_FOREGROUND_COLOR
+		     :background MENU_BACKGROUND_COLOR))
+	 (cmenu (make <Menu>
+		      :parent menu
+		      :activebackground MENU_ABACKGROUND_COLOR
+		      :foreground MENU_FOREGROUND_COLOR
+		      :background MENU_BACKGROUND_COLOR))
+	 (label (make <label>
+		      :background MENU_BACKGROUND_COLOR
+		      :active-background MENU_ABACKGROUND_COLOR
+		      :foreground MENU_FOREGROUND_COLOR
+		      :parent optionframe
+		      :borderwidth 2
+		      :anchor "w"
+		      :relief 'sunken
+		      :font BIGFONT))
+	 (xscrollbar (make <scrollbar>
+			   :background SCROLL_BACKGROUND_COLOR
+			   :active-background SCROLL_ABACKGROUND_COLOR
+			   :trough-color SCROLL_TROUGH_COLOR
+			   :orientation 'h
+			   :parent frame))
+	 (yscrollbar (make <scrollbar>
+			   :background SCROLL_BACKGROUND_COLOR
+			   :active-background SCROLL_ABACKGROUND_COLOR
+			   :trough-color SCROLL_TROUGH_COLOR
+			   :orientation 'v
+			   :parent frame))
+	 (canvas (make <cleanflag-canvas>
+		       :background CANVAS_BACKGROUND_COLOR
+		       :scroll-region
+		       (format #f "0 0 ~A ~A"
+			       (car VIEW_CANVAS_SIZE)
+			       (cadr VIEW_CANVAS_SIZE))
+		       :x-scroll-increment 1
+		       :y-scroll-increment 1
+		       :parent frame
+		       :relief 'groove)))
+    (for-each
+     (lambda (x)
+       (menu-add cmenu 'command
+		 :label "          "
+		 :background (asHex x)
+		 :activebackground (complementAsHex x)
+		 :command (make-color-setter self x)))
+     COLORS_LIST)
+    (menu-add menu 'command
+	      :label "Dismiss"
+	      :background MENU_BACKGROUND_COLOR
+	      :activebackground MENU_ABACKGROUND_COLOR
+	      :foreground MENU_FOREGROUND_COLOR
+	      :command (lambda ()
+			 (remove! self *toplevel-views*)
+			 (safe-destroy self)))
+    (menu-add menu 'command
+	      :label "Focus"
+	      :background MENU_BACKGROUND_COLOR
+	      :activebackground MENU_ABACKGROUND_COLOR
+	      :foreground MENU_FOREGROUND_COLOR
+	      :command (lambda () (toggle-focus self)))
+    (menu-add menu 'command
+	      :label "Print"
+	      :background MENU_BACKGROUND_COLOR
+	      :activebackground MENU_ABACKGROUND_COLOR
+	      :foreground MENU_FOREGROUND_COLOR
+	      :command menu-print-command)
+    (menu-add menu 'cascade
+	      :label "Colors"
+	      :background MENU_BACKGROUND_COLOR
+	      :activebackground MENU_ABACKGROUND_COLOR
+	      :foreground MENU_FOREGROUND_COLOR
+	      :menu cmenu)
+    (menu-add menu 'command
+	      :label "About EnvDraw"
+	      :background MENU_BACKGROUND_COLOR
+	      :activebackground MENU_ABACKGROUND_COLOR
+	      :foreground MENU_FOREGROUND_COLOR
+	      :command describe-envdraw)
+    (menu-add menu 'command
+	      :label "Help"
+	      :background MENU_BACKGROUND_COLOR
+	      :activebackground MENU_ABACKGROUND_COLOR
+	      :foreground MENU_FOREGROUND_COLOR
+	      :command envdraw-help)
+    (slot-set! self 'icon-bitmap VIEW_BITMAP)
+    (slot-set! self 'xscrollbar xscrollbar)
+    (slot-set! self 'yscrollbar yscrollbar)
+    (slot-set! self 'canv canvas)
+    (slot-set! self 'menu menu)
+    (slot-set! xscrollbar 'command (make-canvas-fn canvas 'xview))
+    (slot-set! yscrollbar 'command (make-canvas-fn canvas 'yview))
+    (slot-set! canvas 'x-scroll-command (make-canvas-scroller xscrollbar))
+    (slot-set! canvas 'y-scroll-command (make-canvas-scroller yscrollbar))
+    (slot-set! self 'obj-label label)
+    (slot-set! self 'startx 0)
+    (slot-set! self 'starty 0)
+    (bind canvas "<Button-1>" (make-start-mouse-scrolling-fn self))
+    (bind canvas "<B1-Motion>" (make-mouse-motion-fn self))
+    (pack frame       :expand #t    :fill 'both)
+    (pack optionframe :side 'top    :fill 'x)
+    (pack menub       :side 'left   :fill 'y :pady 2   :padx 2)
+    (pack label       :expand #t    :fill 'x :pady 2   :padx 2)
+    (pack xscrollbar  :side 'bottom :fill 'x)
+    (pack yscrollbar  :side 'right  :fill 'y)
+    (pack canvas      :expand #t    :fill 'both)
+    (set! CANVAS_X_SCROLLINC (x-scroll-increment canvas))
+    (set! CANVAS_Y_SCROLLINC (y-scroll-increment canvas))
+    (x-view-scroll-units canvas (/ (x-coord PLACEMENT_INITIAL_POSITION)
+				   CANVAS_X_SCROLLINC))
+    (y-view-scroll-units canvas (/ (y-coord PLACEMENT_INITIAL_POSITION)
+				   CANVAS_Y_SCROLLINC))
+    (update)))
+
+(define (get-visible-canvas-region tl)
+  ;; this returns a list of percent screen visibility
+  ;; (xmin ymin xmax ymax)
+  (let ((xsb (scrollbar-get (xscrollbar-of tl)))
+	(ysb (scrollbar-get (yscrollbar-of tl))))
+    (list (* VIEW_CANVAS_SIZE_X (car xsb))
+	  (* VIEW_CANVAS_SIZE_Y (car ysb))
+	  (* VIEW_CANVAS_SIZE_X (cadr xsb))
+	  (* VIEW_CANVAS_SIZE_Y (cadr ysb)))))
+
+(define (make-canvas-scroller scrollbar)
+  ;; this returns a function which can be used as the scrollbar command
+  ;; of a Tk scrollbar.  Arguments are first and last, see (man n scrollbar)
+  (let ((scrollid (id scrollbar)))
+    (lambda l (apply scrollid 'set l))))
+
+(define (make-canvas-fn canvas fn)
+  (let ((canvas (id canvas)))
+    (lambda args (apply canvas fn args))))
+
+(define (make-start-mouse-scrolling-fn tl)
+  ;; gets bound to <Button-2> on the canvas
+  (lambda (x y)
+    (slot-set! tl 'startx x)
+    (slot-set! tl 'starty y)))
+
+(define-method find-withtag((self <Canvas>) o)
+  ((Id self) 'find 'withtag o))
+
+(define (make-mouse-motion-fn tl)
+  ;; gets bound to <B2-Motion>
+  (lambda (x y)
+    (let ((can (canvas-of tl)))
+      (when (null? (find-withtag can 'current))
+	(let ((dx (quotient (- x (scroll-startx-of tl)) CANVAS_X_SCROLLINC))
+	      (dy (quotient (- y (scroll-starty-of tl)) CANVAS_Y_SCROLLINC)))
+	  (when (>= (abs dx) 1)
+	    (x-view-scroll-units can (- dx))
+	    (slot-set! tl 'startx x))
+	  (when (>= (abs dy) 1)
+	    (y-view-scroll-units can (- dy))
+	    (slot-set! tl 'starty y)))))))
+
+(define-method view-toplevel?((o <view-toplevel>)) #t)
+(define-method view-toplevel?((o <top>)) #f)
+
+(define-method toplevel?((o <toplevel>)) #t)
+(define-method toplevel?((o <top>)) #f)
+
+(provide "view-toplev")
+
+)

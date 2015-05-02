@@ -1,0 +1,91 @@
+<HEAD>
+<TITLE> EnvDraw</TITLE>
+</HEAD>
+<BODY><P>
+ <BR> <HR><IMG ALIGN=BOTTOM ALT="next" SRC="next_motif_gr.gif">
+<A NAME=tex2html40 HREF="envdraw.html"><IMG ALIGN=BOTTOM ALT="up" SRC="up_motif.gif"></A> <A NAME=tex2html34 HREF="node2.html"><IMG ALIGN=BOTTOM ALT="previous" SRC="previous_motif.gif"></A>   <BR>
+<B>Up:</B> <A NAME=tex2html41 HREF="envdraw.html">EnvDraw</A>
+<B> Previous:</B> <A NAME=tex2html35 HREF="node2.html"> Box and Pointer </A>
+<BR> <HR> <P>
+<H1><A NAME=SECTION00030000000000000000> EnvDraw</A></H1>
+<P>
+The second application included with EnvDraw, from which it derives
+its name, is an environment diagrammer.  This can be started by typing
+(EnvDraw) from the STK prompt.  It will bring up a top-level window
+with a global environment frame placed in the center.  The top-level
+window also contains a listbox, a label, and a menu with entries labeled <i>step</i>,
+<i>continue</i>, <i>stepping</i>, <i>colors</i>, and <i>exit</i>.  The label provides the same
+type of output as it did in the box and pointer application.  The <i>step</i>
+and <i>continue</i> entries will step the evaluator through evaluation.  <i>Step</i>
+will advance on step.  <i>Continue</i> will continue evaluation until the
+REPL finishes.  <i>Stepping</i> toggles whether or not to step at all.
+<i>colors</i> behaves exactly like in the view application.  <i>Exit</i> leaves
+EnvDraw and STK.
+View will not work inside the metacircular evaluator, as macros aren't
+supported, and view is a macro.  It should not be neccesary to view
+anything though, as all data is diagrammed.
+You will be placed in a metacircular evaluator where everything you
+evaluate is traced and drawn.  When something is entered to the REPL
+it will be evaluated, tracing the evaluation in the listbox in the
+window.  If stepping is enabled, it will pause at each call to apply,
+announcing whether a primitive (or any underlying applicable object)
+is being applied or whether a lambda expression created in the
+metacircular evaluator is being applied.  Environment diagrams are
+drawn just as in Structure and Interpretation of Computer Programs.
+Environement frames, procedures, and list structures which have become
+garbage will be marked as such in the same manner as the view
+application.  Button-1 moves an object and its decsendants.  Button-2
+moves just one object.  Button-3 will delete garbage.
+<tt><P>
+<PRE>
+> (define make-counter
+    (let ((count 0))
+      (lambda ()
+	(let ((local-count 0))
+	  (lambda (n)
+	    (set! count (+ count n))
+	    (set! local-count (+ local-count n)))))))
+make-counter
+> (define c1 (make-counter))
+c1
+> (c1 3)
+3
+> (c1 4)
+7
+> (define c2 (make-counter))
+c2
+> (c2 5)
+5
+> (c2 6)
+11
+</PRE>
+<IMG ALIGN=BOTTOM SRC="figure7.gif">
+<BR><STRONG>Figure 7:</STRONG> Sample environment diagram<BR>
+<P>
+<P>
+The meta-evaluator provides several built-in procedures.  <i>Load</i> will
+load a scheme source file into the evaluator.  <i>Display</i> and <i>print</i> are
+the only properly defined output functions.  The evaluator is fairly complete,
+providing most of the R4RS special forms.  <i>Letrec</i>
+is not supported.  <i>Call/cc</i> is also provided.  <i>Print-canvas</i> will try to print the canvas to a
+postscript printer using a SYSV style lp command and the LPDEST
+environment variable (the -d flag specifies printer destination), or
+optionally, print a postscript file to a file named by an argument.
+The meta-evaluator is equipped for catching and printing error
+messages, however the lack of error handling support in STK created a
+problem in this respect.
+To exit the evaluator send an EOF, (exit), or hit the EXIT button
+on the top of the window.
+<P>
+</tt>
+ <BR> <HR><IMG ALIGN=BOTTOM ALT="next" SRC="next_motif_gr.gif">
+<A NAME=tex2html40 HREF="envdraw.html"><IMG ALIGN=BOTTOM ALT="up" SRC="up_motif.gif"></A> <A NAME=tex2html34 HREF="node2.html"><IMG ALIGN=BOTTOM ALT="previous" SRC="previous_motif.gif"></A>   <BR>
+<B>Up:</B> <A NAME=tex2html41 HREF="envdraw.html">EnvDraw</A>
+<B> Previous:</B> <A NAME=tex2html35 HREF="node2.html"> Box and Pointer </A>
+<BR> <HR> <P>
+<BR> <HR>
+<P><ADDRESS>
+<I> Josh MacDonald <BR>
+Sun Sep  3 16:36:28 PDT 1995</I>
+</ADDRESS>
+</BODY>

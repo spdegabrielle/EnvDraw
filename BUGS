@@ -1,0 +1,5 @@
+1. Pressing both button 1 and 2 and releasing either while moving will
+   separate an object from its pointers.
+
+2. There's still problems with updating the visible canvas region
+   after an insertion.

@@ -1,0 +1,105 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: stacks.stk 1.2 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;                             STACKS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(unless (provided? "stacks")
+
+(define-class <stack> ()
+  ((l :initform '() :init-keyword :s)))
+
+(define-method push((self <stack>) it)
+  (slot-set! self 'l (cons it (slot-ref self 'l))))
+
+(define-method empty?((self <stack>))
+  (null? (slot-ref self 'l)))
+
+(define-method empty!((self <stack>))
+  (slot-set! self 'l '()))
+
+(define-method pop((self <stack>))
+  (let ((it (slot-ref self 'l)))
+    (slot-set! self 'l (cdr it))
+    (car it)))
+
+(define-method stack-ref((self <stack>) n)
+  (list-ref (slot-ref self 'l) n))
+
+(define-method stack->list((self <stack>))
+  (slot-ref self 'l))
+
+(define-method copy((self <stack>))
+  (make <stack> :s (append (stack->list self) '())))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                        DOUBLY LINKED LISTS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-class <dll> ()
+  ((data :getter dll-data
+	 :setter set-dll-data!
+	 :init-keyword :data)
+   (next :getter dll-next
+	 :setter set-dll-next!
+	 :init-keyword :next)
+   (prev :getter dll-prev
+	 :setter set-dll-prev!
+	 :init-keyword :prev)))
+
+(define (make-dll data prev next)
+  (make <dll> :data data :prev prev :next next))
+
+(define (insert-after! dll data)
+  (let* ((after (dll-next dll))
+	 (new (make-dll data dll after)))
+    (set-dll-next! dll new)
+    (set-dll-prev! after new)))
+
+(define (insert-before! dll data)
+  (let* ((before (dll-prev dll))
+	 (new (make-dll data before dll)))
+    (set-dll-next! before new)
+    (set-dll-prev! dll new)))
+
+(define (remove-after! dll)
+  (set-dll-next! dll (dll-next (dll-next dll)))
+  (set-dll-prev! (dll-next dll) dll))
+
+(define (remove-before! dll)
+  (set-dll-prev! dll (dll-prev (dll-prev dll)))
+  (set-dll-next! (dll-prev dll) dll))
+
+(define (make-cdll data)
+  (let ((ring (make-dll data '() '())))
+    (set-dll-next! ring ring)
+    (set-dll-prev! ring ring)
+    ring))
+
+(define (dll-farthest-prev dll)
+  (if (null? (dll-prev dll))
+      dll
+      (dll-farthest-prev (dll-prev dll))))
+
+(define (dll-farthest-next dll)
+  (if (null? (dll-next dll))
+      dll
+      (dll-farthest-next (dll-next dll))))
+
+(provide "stacks")
+
+)

@@ -1,0 +1,222 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: view-pointers.stk 1.2 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+(require "simple-pointer")
+
+(unless (provided? "view-pointers")
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                            POINTERS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-class <cell-pointer> (<simple-pointer>)
+  ((curroff    :initform '(0 0))
+   (spacing    :initform (random (inexact->exact (floor (/ CELL_SIZE 3)))))
+   (type       :init-keyword :type) ;; car cdr or already-viewed
+   (car-or-cdr :init-keyword :car-or-cdr))) ;; like type but always car or cdr
+
+(define (already-viewed? pointer)
+  (equal? (slot-ref pointer 'type) 'already-posted))
+
+;; two types of motion hook
+
+(define-method pointer-motion-hook((pointer <cell-pointer>))
+  (lambda (already-moved dx dy)
+    (unless (memq (parent-of pointer) already-moved)
+      (cell-move-head pointer dx dy))))
+
+(define-method prev-pointer-motion-hook((pointer <cell-pointer>))
+  (lambda (already-moved dx dy)
+    (unless (memq (slot-ref pointer 'child) already-moved)
+      (cell-move-head pointer (- dx) (- dy)))))
+
+(define (make-car-pointer canvas coords coordsto color)
+  (make <line>
+	:parent canvas
+	:fill (asHex (darken-color color))
+	:coords
+	  (append (+ coords CARP_OFFSET) coordsto)
+	:arrow "last"
+	:width POINTER_WIDTH))
+
+(define (make-cdr-pointer canvas coords coordsto color)
+  (make <line>
+	:parent canvas
+	:fill (asHex (darken-color color))
+	:coords
+	  (append (+ coords CDRP_OFFSET) coordsto)
+	:arrow "last"
+	:width POINTER_WIDTH))
+
+;; these two connect vobj and a new viewed-object
+
+(define (add-car-pointer vobj newcar tl)
+  (let ((nptr (make (cond ((viewed-cell? newcar) <cell-pointer>)
+			  ((procedure-object? newcar) <cell-to-proc-pointer>)
+			  (else <atom-pointer>))
+		    :car-or-cdr 'car
+		    :parent vobj
+		    :child newcar
+		    :type 'car))
+	(pwid (make-car-pointer (canvas-of vobj)
+				(coords-of vobj)
+				(if (procedure-object? newcar)
+				    (list PROCEDURE_DIAMETER 0)
+				    '(0 0))
+				(color-of tl))))
+    (slot-set! nptr 'pwid pwid)
+    (slot-prepend! vobj 'pointers (cons 'car nptr))
+    (slot-prepend! newcar 'ptrs2me nptr)
+    (add-to-tmci-group vobj pwid)
+    (add-prev-motion-hook vobj nptr)
+    (add-motion-hook newcar nptr)))
+
+(define (add-cdr-pointer vobj newcdr tl)
+  (let ((nptr (make (cond ((viewed-cell? newcdr) <cell-pointer>)
+			  ((procedure-object? newcdr) <cell-to-proc-pointer>)
+			  (else <atom-pointer>))
+		    :car-or-cdr 'cdr
+		    :parent vobj
+		    :child newcdr
+		    :type 'cdr))
+	(pwid (make-cdr-pointer (canvas-of vobj)
+				(coords-of vobj)
+				(if (procedure-object? newcdr)
+				    (list PROCEDURE_DIAMETER 0)
+				    '(0 0))
+				(color-of tl))))
+    (slot-set! nptr 'pwid pwid)
+    (slot-prepend! vobj 'pointers (cons 'cdr nptr))
+    (slot-prepend! newcdr 'ptrs2me nptr)
+    (add-to-tmci-group vobj pwid)
+    (add-prev-motion-hook vobj nptr)
+    (add-motion-hook newcdr nptr)))
+
+;; pointer motion
+
+;; this may look a lot more confusing than it perhaps is.  a pointer
+;; has coordinates, a random offset, and a current offset.  the random
+;; offset is thrown in to help disinguish several pointers which would
+;; otherwise lie on top of each other.  the coordinates always consist
+;; of some number of points, the first point is the tail and will never
+;; change, only the head, which is the last coordinate, will ever change.
+;; the head's coordinate is added with the previous offset to get the
+;; position of the cell which it points too, from that it determines
+;; a good geometry and determines a new offset, which will either include
+;; the random offset, an offset to keep the pointer horizontal or vertical,
+;; or no offset at all.
+
+(define (cell-move-head pointer dx dy)
+  (let* ((old-coords (coords-of pointer))
+	 (tail (first-two old-coords))
+	 (head (+ (list dx dy) (- (slot-ref pointer 'curroff))
+		  (last-two old-coords)))
+	 (new-coords (find-cell-pointer tail head
+					(slot-ref pointer 'spacing)
+					(slot-ref pointer 'car-or-cdr))))
+    (slot-set! pointer 'curroff (- (last-two new-coords) head))
+    (slot-set! pointer 'coords new-coords)))
+
+(define (find-cell-pointer tail head randoff ptype)
+  (let* ((dx (- (car tail) (car head)))
+	 (dy (- (cadr tail) (cadr head)))
+	 (adx (abs dx))
+	 (ady (abs dy)))
+    (cond ((and (>= adx CELL_SIZE)
+		(>= ady CELL_SIZE))
+	   (if (> dy 0)
+	       (append tail (+ head CELL_Y))
+	       (append tail head)))
+	  ((<= adx CELL_SIZE)
+	   (if (>= ady CELL_SIZE)
+	       (let ((can-drop?
+		      (or (and (equal? ptype 'car)
+			       (>= dx (- CELL_SIZE))
+			       (<= dx (* 1.5 CELL_SIZE)))
+			  (and (equal? ptype 'cdr)
+			       (>= dx (* -1.5 CELL_SIZE))
+			       (<= dx CELL_SIZE)))))
+		 (if can-drop?
+		     (if (< dy 0)
+			 (append tail (+ head (list dx 0)))
+			 (append tail (+ head CELL_Y (list dx 0))))
+		     (append tail (+ CELL_Y head))))
+	       (let ((basis-y (list 0 (- CELL_SIZE)))
+		     (basis-x (if (equal? ptype 'car)
+				  (list (- CELL_SIZE) 0)
+				  (list (+ CELL_SIZE) 0)))
+		     (offset (if (equal? ptype 'car)
+				 (list (- randoff) 0)
+				 (list randoff 0))))
+		 (append tail
+			 (+ tail basis-x)
+			 (+ tail basis-x basis-y)
+			 (+ head (list 0 dy) basis-y offset)
+			 (+ offset head)))))
+	  (else (let ((basis-y (list 0 (- CELL_SIZE)))
+		      (basis-x (list (if (> dx 0) CELL_SIZE (- CELL_SIZE)) 0))
+		      (cut-corner? (or (and (equal? ptype 'car) (> dx 0))
+				       (and (equal? ptype 'cdr) (< dx 0)))))
+		  (cond (cut-corner?
+			 (cond
+			  ((and (<= ady CELL_SIZE) (>= dy 0))
+			   (append tail (+ head basis-x (list 0 dy))))
+			  (else
+			   (append tail (+ head (list (- randoff) dy))
+				   (+ (list (- randoff) 0) head)))))
+			(else (append tail
+				      (+ tail basis-y (list 0 (- randoff)))
+				      (+ head (list 0 dy) basis-y
+					 (list randoff (- randoff)))
+				      (+ (list randoff 0) head)))))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                         ATOM POINTERS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-class <atom-pointer> (<simple-pointer>)
+  ((type       :allocation :virtual
+	       :slot-set! (lambda (o w) #t)
+	       :slot-ref (lambda (w) 'atom))
+   (curroff    :initform '(0 0))))
+
+(define-method pointer-motion-hook((pointer <atom-pointer>))
+  (lambda (already-moved dx dy)
+    (unless (memq (parent-of pointer) already-moved)
+      (atom-move-head pointer dx dy))))
+
+(define-method prev-pointer-motion-hook((pointer <atom-pointer>))
+  (lambda (already-moved dx dy)
+    (unless (memq (slot-ref pointer 'child) already-moved)
+      (atom-move-head pointer (- dx) (- dy)))))
+
+(define (atom-move-head pointer dx dy)
+  (let* ((old-coords (coords-of pointer))
+	 (tail (first-two old-coords))
+	 (head (+ (list dx dy) (- (slot-ref pointer 'curroff))
+		  (last-two old-coords)))
+	 (new-coords (find-atom-pointer tail head)))
+    (slot-set! pointer 'curroff (- (last-two new-coords) head))
+    (slot-set! pointer 'coords new-coords)))
+
+(define (find-atom-pointer tail head)
+  (if (>= (y-coord head) (y-coord tail))
+      (append tail head)
+      (append tail (list (x-coord head) (+ 15 (y-coord head))))))
+
+(provide "view-pointers")
+
+)

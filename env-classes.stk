@@ -1,0 +1,429 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: env-classes.stk 1.1.1.1 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+(require "move-composite")
+(require "math")
+(require "color")
+(require "view")
+(require "env-pointers")
+
+(unless (provided? "env-classes")
+
+;; pretty printed used for procedures
+(load "pp")
+
+;; PROCEDURE_DIAMETER specifies the diameter of each half of a procedure
+;; widget, as well as determines the scale of several other things,
+;; including the amount of room for procedure text and the amount of offset
+;; pointers give themselves.
+(define PROCEDURE_DIAMETER 30)
+(define PROCEDURE_RADIUS (1/2 PROCEDURE_DIAMETER))
+(define BENT_POINTER_OFFSET (1/2 PROCEDURE_DIAMETER))
+(define INITIAL_ENV_HEIGHT 200)
+(define INITIAL_ENV_WIDTH 150)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                            PROCEDURES
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-class <procedure-object> (<tk-moveable-composite-item>)
+  ((pointers :getter pointers-of)
+   (color    :getter color-of)
+   (ptrs2me  :initform '()
+	     :getter pointers-to)
+   (gc-flag  :initform #f
+	     :getter gc-flag-of)
+   (body     :getter body-of)
+   (frame    :getter frame-of)))
+
+(define-method width-of((self <procedure-object>))
+  (* 4 PROCEDURE_DIAMETER))
+
+(define-method height-of((self <procedure-object>))
+  (* 3 PROCEDURE_DIAMETER))
+
+(define-method center-of((self <procedure-object>))
+  (make-point (x-coord self) (+ (y-coord self) (* 2 PROCEDURE_DIAMETER))))
+
+(define-method procedure-object?((self <procedure-object>)) #t)
+(define-method procedure-object?((self <top>)) #f)
+
+(define-method profile((self <procedure-object>))
+  (list (* 3 PROCEDURE_DIAMETER)
+	(* 3 PROCEDURE_DIAMETER)
+	0 (list 0 0) (list 0 0)))
+
+(define-method delete-object((obj <procedure-object>) ht)
+  (when (gc-flag-of obj)
+    (slot-set! obj 'gc-flag #f)
+    (hash-table-remove! ht obj)
+    (set-cleanflag! (canvas-of obj) #f)
+    (for-each (lambda (x) (delete-object (cdr x) ht)) (pointers-of obj))
+    (for-each (lambda (x) (delete-object x ht)) (pointers-to obj))
+    (for-each safe-destroy (widgets-of obj))
+    (delete-object (frame-of obj) ht)))
+
+;; requires :proc and :frame
+(define-method initialize-item((self <procedure-object>) canvas coords args)
+  (slot-set! self 'Cid (gensym "pr"))
+  (next-method)
+  (hash-table-put! (table-of *view-root*) self self)
+  (let* ((canvas (canvas-of self))
+	 (proc (get-keyword :proc args))
+	 (frame (let ((it (get-keyword :frame args)))
+		  (set-precise-position it)
+		  it))
+	 (rhalf (make <oval>
+		      :parent canvas
+		      :fill (asHex (color-of *view-root*))
+		      :coords (append (+ coords (list PROCEDURE_DIAMETER 0))
+				      (+ coords (list (* 2 PROCEDURE_DIAMETER) PROCEDURE_DIAMETER)))))
+	 (lhalf (make <oval>
+		      :parent canvas
+		      :fill (asHex (color-of *view-root*))
+		      :coords (append coords
+				      (+ coords (list PROCEDURE_DIAMETER
+						      PROCEDURE_DIAMETER)))))
+	 (args (make <text-item>
+		     :parent canvas
+		     :coords (+ coords (list 0 (* 2 PROCEDURE_DIAMETER)))
+		     :anchor "w"
+		     :text (string-append "args: " (pp (cadr proc) #f))))
+	 (body (make <text-item>
+		     :parent canvas
+		     :coords (+ coords
+				(list 0
+				      ;; here 8 is the height of the
+				      ;; default font (cause I don't know
+				      ;; the default fontname, or I'd
+				      ;; use text-height)
+				      (+ (* 2 PROCEDURE_DIAMETER) 8)))
+		     :anchor "w"
+		     :text (format-body-string proc)))
+	 (ptr (make <line>
+		    :width POINTER_WIDTH
+		    :fill (asHex (darken-color (color-of *view-root*)))
+		    :parent canvas
+		    :arrow "last"
+		    :coords
+		      (append (+ coords (list PROCEDURE_RADIUS PROCEDURE_RADIUS))
+			      (+ coords (list PROCEDURE_RADIUS (* 1.5  PROCEDURE_DIAMETER))))))
+	 (frptr (make <line>
+		      :width POINTER_WIDTH
+		      :fill (asHex (darken-color (color-of *view-root*)))
+		      :parent canvas
+		      :arrow "last"
+		      :coords
+		        (append (+ coords (list (* 1.5 PROCEDURE_DIAMETER)
+						PROCEDURE_RADIUS))
+				(coords-of frame))))
+	 (pntr (make <from-proc-pointer> :parent self :child frame)))
+    (set-sentinel! self lhalf)
+    (set-parent! self #f)
+    (slot-prepend! frame 'ptrs2me pntr)
+    (slot-set! self 'color (color-of *view-root*))
+    (slot-set! self 'pointers (list (cons 'frame pntr)))
+    (slot-set! self 'body (list lhalf rhalf))
+    (slot-set! self 'frame frame)
+    (slot-set! pntr 'pwid frptr)
+    (slot-set! self 'chwidgets '())
+    (slot-set! self 'mywidgets '())
+    (slot-set! self 'par-wid-fns '())
+    (for-each
+     (lambda (x)
+       (add-to-tmci-group self x))
+     (list rhalf lhalf args body ptr frptr))
+    (bind-for-gc self *view-root*)
+    (add-group-to-tmci-group frame self)
+    (add-prev-motion-hook self pntr)
+    (add-motion-hook frame pntr)
+    (canvas-id-of self)))
+
+(define (truncate-string s len)
+  (if (> (string-length s) len)
+      (string-append (substring s 0 (- len 1)) " ...")
+      s))
+
+(define (format-body-string s) ;; pretty prints it to a string, truncates
+  ;; one level of parens, removes a newline, and cuts it off at about 20 chars
+  (let ((string (viewed-rep (cddr s))))
+    (truncate-string
+     (string-append "body: " (substring string 1 (- (string-length string) 1)))
+     20))) ;; this number messes things up because <text-item> doesn't seem to
+	   ;; respond to its :width, causing things to wrap.
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                           ENVIRONMENTS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-class <frame-object> (<tk-moveable-composite-item>)
+  ((environment :getter environment-of)
+   ;; environment who's first frame is this offset of next binding
+   (color    :getter color-of)
+   (gc-flag  :initform #f
+	     :getter gc-flag-of)
+   (ptrs2me  :initform '()
+	     :getter pointers-to)
+   (name     :getter name-of)
+   (pointers :initform '()
+	     :getter pointers-of)
+   (inspt    :initform (* 2 MEDIUM_FONT_HEIGHT)
+	     :getter insertion-point-of)
+   (width    :allocation :virtual
+	     :getter width-of
+	     :slot-set!
+	      (lambda (w o)
+		(let ((c (coords-of (sentinel-of w))))
+		  (slot-set! (sentinel-of w) 'coords
+		      (list (car c) (cadr c) (+ (car c) o) (cadddr c)))))
+	     :slot-ref
+	      (lambda (w)
+		(let ((c (coords-of (sentinel-of w))))
+		  (- (caddr c) (car c)))))
+   (height   :allocation :virtual
+	     :getter height-of
+	     :slot-set!
+	      (lambda (w o)
+		(let ((c (coords-of (sentinel-of w))))
+		  (slot-set! (sentinel-of w) 'coords
+		      (list (car c) (cadr c) (caddr c) (+ o (cadr c))))))
+	    :slot-ref
+	     (lambda (w)
+	       (let ((c (coords-of (sentinel-of w))))
+		 (- (cadddr c) (cadr c)))))))
+
+(define-method center-of((self <top>))
+  (let* ((c (coords-of self))
+	 (cx (car c))
+	 (cy (cadr c)))
+    (make-point (avg cx (+ cx (width-of self)))
+		(avg cy (+ cy (height-of self))))))
+
+(define-method frame-object?((self <frame-object>)) #t)
+(define-method frame-object?((self <top>)) #f)
+
+(define-method delete-object((obj <frame-object>) ht)
+  (when (gc-flag-of obj)
+    (slot-set! obj 'gc-flag #f)
+    (hash-table-remove! ht obj)
+    (set-cleanflag! (canvas-of obj) #f)
+    (for-each (lambda (x) (delete-object (cdr x) ht)) (pointers-of obj))
+    (for-each (lambda (x) (delete-object x ht)) (pointers-to obj))
+    (for-each safe-destroy (widgets-of obj))))
+
+(define-method initialize-item((self <frame-object>) canvas coords args)
+  (slot-set! self 'Cid (gensym "en"))
+  (next-method)
+  (hash-table-put! (table-of *view-root*) self self)
+  (let* ((canvas (canvas-of self))
+	 (envname (get-keyword :name args))
+	 (bbox (make <Rectangle>
+		     :parent canvas
+		     :fill (asHex (color-of *view-root*))
+		     :coords (append coords
+				     (+ coords (list
+						(get-keyword :width args)
+						(get-keyword :height args))))))
+	 (name (make <text-item>
+		     :parent canvas
+		     :font MEDIUM_FONT
+		     :coords (+ coords (list 5 MEDIUM_FONT_HEIGHT))
+		     :text envname
+		     :anchor "w")))
+    (slot-set! self 'color (color-of *view-root*))
+    (set-sentinel! self bbox)
+    (set-parent! self #f)
+    (slot-set! self 'coords coords)
+    (slot-set! self 'name envname)
+    (slot-set! self 'chwidgets '())
+    (slot-set! self 'mywidgets '())
+    (slot-set! self 'color (color-of *view-root*))
+    (bind-for-entrance self *view-root* envname)
+    (bind-for-gc self *view-root*)
+    (add-to-tmci-group self bbox)
+    (add-to-tmci-group self name)
+    (canvas-id-of self)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                             BINDINGS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-class <binding-object> ()
+  ((bind  :init-keyword :bind
+	  :getter binding-of)
+   (varw  :initform 'not-placed
+	  :getter variable-widget-of)
+   (valw  :initform 'not-placed
+	  :getter value-widget-of)
+   (ptrw  :initform 'not-placed
+	  :getter pointer-widget-of)
+   (frame :init-keyword :frame :getter frame-of)))
+
+(define (place-binding fo bo)
+  (set-precise-position fo)
+  (let* ((binding (binding-of bo))
+	 (val (binding-value binding))
+	 (var (binding-variable binding))
+	 (coords (coords-of fo))
+	 (inspt (insertion-point-of fo))
+	 (canvas (canvas-of fo))
+	 (vartx (safely-format var))
+	 (vartxw (text-width vartx))
+	 (ptr 'nothing)
+	 (valwid 'nothing)
+	 (sym (make <text-item>
+		    :parent canvas
+		    :font MEDIUM_FONT
+		    :anchor "w"
+		    :text vartx
+		    :coords (+ coords (list 5 inspt)))))
+    (cond ((compound-procedure? val)
+	   (let ((x (+ vartxw 25))
+		 (y (width-of fo)))
+	     (when (> x y)
+	       (set-cleanflag! canvas #f)
+	       (slot-set! fo 'width x)))
+	   (let* ((child (let ((it (procedure-object val)))
+			   (set-precise-position it)
+			   it))
+		  (pwid (make <line>
+			      :width POINTER_WIDTH
+			      :parent canvas
+			      :arrow "last"
+			      :fill (asHex (darken-color (color-of *view-root*)))
+			      :coords
+			        (append coords (+ (coords-of child)
+						  (list PROCEDURE_DIAMETER 0))))))
+	     (set! ptr (make <to-proc-pointer> :parent fo :child child))
+	     (slot-set! ptr 'textoff (+ (list 5 inspt) (list vartxw 0)))
+	     (slot-set! ptr 'pwid pwid)
+	     (to-proc-move-head ptr 0 0) ;; adjust head
+	     (set! valwid child)
+	     (add-to-tmci-group fo sym)
+	     (add-to-tmci-group fo pwid)
+	     (slot-prepend! child 'ptrs2me ptr)
+	     (slot-prepend! fo 'pointers (cons 'env ptr))
+	     (add-group-to-tmci-group fo child)
+	     (add-motion-hook child ptr)
+	     (add-prev-motion-hook fo ptr)))
+	  ((viewable-pair? val)
+	   (let ((x (+ vartxw 25))
+		 (y (width-of fo)))
+	     (when (> x y)
+	       (set-cleanflag! canvas #f)
+	       (slot-set! fo 'width x)))
+	   (let* ((val (if (external-binding? val) (external-value val) val))
+		  (child (build-tree *view-root* val DEFAULT_PREDICATE))
+		  (rl-child (or child (hash-table-get (table-of *view-root*)
+						      val)))
+		  (pwid (make <line>
+			      :width POINTER_WIDTH
+			      :fill
+			       (asHex (darken-color (color-of *view-root*)))
+			      :parent canvas
+			      :arrow "last"
+			      :coords
+			      (append (append coords (coords-of rl-child))))))
+	     (set! ptr (make <to-view-pointer>
+			     :parent fo
+			     :child rl-child))
+	     (slot-set! ptr 'textoff (+ (list 5 inspt)
+					(list vartxw 0)))
+	     (slot-set! ptr 'pwid pwid)
+	     (slot-prepend! fo 'pointers (cons 'env ptr))
+	     (slot-prepend! rl-child 'ptrs2me ptr)
+	     (set! valwid rl-child)
+	     (add-to-tmci-group fo sym)
+	     (add-to-tmci-group fo pwid)
+	     (add-motion-hook rl-child ptr)
+	     (add-prev-motion-hook fo ptr)
+	     (move-head ptr 0 0)
+	     (when child
+	       (add-group-to-tmci-group fo child)
+	       (place-new-widget child *view-root*))))
+	  (else
+	   (let* ((valtx (viewed-rep val))
+		  (valtxw (text-width valtx)))
+	     (let ((x (+ valtxw vartxw 50))
+		   (y (width-of fo)))
+	       	     (when (> x y)
+		       (set-cleanflag! canvas #f)
+		       (slot-set! fo 'width x)))
+	     (set! ptr (make <line>
+			     :width POINTER_WIDTH
+			     :fill (asHex (darken-color (color-of *view-root*)))
+			     :parent canvas
+			     :arrow "last"
+			     :coords
+			      (append
+			       (+ coords
+				  (list 5 inspt)
+				  (list vartxw 0))
+			       (+ coords
+				  (list (- (width-of fo) valtxw 5) inspt)))))
+	     (set! valwid (make <text-item>
+				:parent canvas
+				:font MEDIUM_FONT
+				:anchor "w"
+				:text valtx
+				:coords
+				 (+ coords
+				    (list (- (width-of fo) valtxw) inspt))))
+	     (add-to-tmci-group fo sym)
+	     (add-to-tmci-group fo ptr)
+	     (add-to-tmci-group fo valwid))))
+    (slot-set! bo 'ptrw ptr)
+    (slot-set! bo 'valw valwid)
+    (slot-set! bo 'varw sym)
+    ;; update the insertion point
+    (incr-insertion-point fo)
+    ;; if the bindings take up too much space expand
+    (let ((h (height-of fo)))
+      (when (> (insertion-point-of fo) h)
+	(set-cleanflag! canvas #f)
+	(slot-set! fo 'height (+ MEDIUM_FONT_HEIGHT h))))))
+
+(define (incr-insertion-point fo)
+  (slot-set! fo 'inspt (+ (insertion-point-of fo) MEDIUM_FONT_HEIGHT)))
+
+(define (extend-environment-pointer env)
+  (unless (null? (rest-frames env))
+    (let* ((fo (frame-object env))
+	   (next-fo (frame-object (rest-frames env)))
+	   (pwid (begin (set-precise-position fo)
+			(set-precise-position next-fo)
+			(make <line>
+			      :width POINTER_WIDTH
+			      :fill (asHex (darken-color (color-of *view-root*)))
+			      :parent (canvas-of fo)
+			      :coords (append (coords-of next-fo)
+					      (coords-of fo))
+			      :arrow "first")))
+	   (pntr (make <env-pointer>
+		       :child fo
+		       :parent next-fo)))
+      (slot-set! pntr 'pwid pwid)
+      (slot-prepend! fo 'ptrs2me pntr)
+      (slot-prepend! next-fo 'pointers (cons 'env pntr))
+      (add-to-tmci-group next-fo pwid)
+      (add-group-to-tmci-group next-fo fo)
+      (add-motion-hook fo pntr)
+      (add-prev-motion-hook next-fo pntr)
+      (move-head pntr 0 0))))
+
+(provide "env-classes")
+
+)

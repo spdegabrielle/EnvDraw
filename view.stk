@@ -1,0 +1,241 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: view.stk 1.1.1.1 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+(or (getenv "ENVDRAW_LIBRARY_PATH")
+    (error "Please set your ENVDRAW_LIBRARY_PATH environment varaible"))
+
+(if Tk:initialized?
+    (wm 'withdraw '.)
+    (error "You must be running X to run EnvDraw"))
+
+(define *EnvDraw-library* (getenv "ENVDRAW_LIBRARY_PATH"))
+
+(unless (member *EnvDraw-library* *load-path*)
+  (set! *load-path* (cons *EnvDraw-library* *load-path*)))
+
+(or (file-exists? (format #f "~a/icons/view" *EnvDraw-library*))
+    (error "Installation problem, please check your ENVDRAW_LIBRARY_PATH variable"))
+
+(require "view-toplev")
+(require "view-misc")
+(require "math")
+(require "color")
+
+(unless (provided? "view")
+
+(set! *help-path* (cons (format #f "~a/Help/" *EnvDraw-Library*) *help-path*))
+
+(define stk::define define)
+(define stk::set! set!)
+(define stk::map map)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                       CONFIGURABLE OPTIONS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define FOCUSED_COLOR "whitesmoke")
+(define UNFOCUSED_COLOR "gainsboro")
+(define MENU_BACKGROUND_COLOR "honeydew3")
+(define MENU_ABACKGROUND_COLOR "honeydew4")
+(define MENU_FOREGROUND_COLOR "black")
+(define CANVAS_BACKGROUND_COLOR "snow3")
+(define SCROLL_BACKGROUND_COLOR "honeydew3")
+(define SCROLL_ABACKGROUND_COLOR "honeydew2")
+(define SCROLL_TROUGH_COLOR "honeydew4")
+
+;; print command is formed by appending a filename to this string
+(define *print-command* "lpr -Php ")
+;; used in the dialog window for the printed form of the object the mouse
+;; last touched.
+(define BIGFONT "-sony-fixed-medium-r-normal--24-230-*-*-*-120-*-*")
+;; used on the canvas for atoms
+(define MEDIUM_FONT "-sony-fixed-medium-r-normal--16-150-75-75-c-80-iso8859-1")
+;; initial size of the canvas in pixels
+(define VIEW_WINDOW_INITSIZE "700x700")
+;; colors which will be displayed in a Colors menu on each Window.
+(define COLORS_LIST
+  (list (make-color 152 251 152)   ;; PaleGreen
+	(make-color 200 200 150)   ;; PukeGreen
+	(make-color 255 250 205)   ;; LemonChiffon
+	(make-color 132 112 255)   ;; LightSlateBlue
+	(make-color 102 205 170)   ;; MediumAquamarine
+	(make-color 238 232 170)   ;; PaleGoldenrod
+	(make-color 250 128 114)   ;; Salmon
+	(make-color 238 130 238)   ;; Violet
+	(make-color 221 160 221)   ;; Plum
+	(make-color 147 112 219)   ;; MediumPurple
+	(make-color 216 191 216))) ;; Thistle
+;; the width of pointers which are active.
+(define POINTER_WIDTH 2)
+;; the width of pointers which are garbage.
+(define GCD_POINTER_WIDTH 1)
+;; the stipple pattern of objects which are garbage, it is the name of
+;; a bitmap in the library directory.
+(define GC_STIPPLE_PATTERN (format #f "@~aimages/grey.25" *STk-library*))
+;; this is a full pattern, and has no noticable stipple, used for non-
+;; garbage items.
+(define STIPPLE_PATTERN (format #f "@~aicons/full" *STk-library*))
+;; the scale (length of pointers), change after load with set-scale!
+(define SCALE 30)
+;; width and height a cell, change after load with set-cell-size!
+(define CELL_SIZE 30)
+;; make this false to have separate windows for each time view is called.
+;; only one copy of each cell will be shown in each display, by setting
+;; *view-root* #t, it will create a new window if there is none or use
+;; the existing one if one is already created.
+(define *view-root* #t)
+;; garbage-collection style: #t indicates automatic GCing which means that
+;; any time a cell or atom on the graph becomes garbage it will be removed.
+;; otherwise, anytime a cell or atom on the graph becomes garbage it will
+;; become stippled with the GC_STIPPLE_PATTERN, each of its pointers will
+;; become stippled also, and pressing GC_MOUSE_BUTTON on the item will
+;; delete it and anything connected to it.
+(define GARBAGE_COLLECT? #f)
+;; the default predicate used for drawing diagrams placed by set! and set-cxr!.
+;; it will be called on each pair which gets drawn, and should return #t if
+;; the pair should be drawn as a tree, thus tree? is a good default predicate.
+;; returning false will cause the pair to be drawn as a list.
+(define DEFAULT_PREDICATE tree?)
+;; The mouse button that causes deletion.  Must be a Tk-style binding.
+(define GC_MOUSE_BUTTON "<Button-3>")
+;; spacing for the placement algorithm, there will be this much extra
+;; space around each object, distributed evenly.
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                      NON-CONFIGURABLE OPTIONS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; a constant used a lot
+(define MEDIUM_FONT_HEIGHT (text-height MEDIUM_FONT))
+;; maintains a list of active toplevels.
+(define *toplevel-views* '())
+;; this is the point where a symbol will point to a cell.
+(define SYMBOL_OFFSET (list (- CELL_SIZE) (* 0.4 CELL_SIZE)))
+
+(require "move-composite")
+(require "view-pointers")
+(require "view-classes")
+(require "view-toplev")
+(require "view-profiles")
+(require "view-updates")
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                              View
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-macro (view sym . pred)
+  `(view::real ,sym ',sym ,@pred))
+
+(define (view::real obj sym . pred)
+  (if (not (null? (symbol-viewed? sym (list *view-root*))))
+      #f
+      (let* ((sym (if (symbol? sym) sym "#[no binding]"))
+	     (pred (if (null? pred) DEFAULT_PREDICATE (car pred)))
+	     (tl (find-toplevel))
+	     (root (if (atom? obj)
+		       (make-single-atom obj tl)
+		       (build-tree tl obj pred))))
+	;; at this point if root is #f, it means that the cell which is being
+	;; viewed is already on the diagram, so a different approach must be
+	;; used to place the symbol.
+	(unless root (find-cell-and-place-symbol sym obj tl))
+	(when root
+	  (add-room-for-symbol! root sym)
+	  (place-new-widget root tl)
+	  (make-symbol-pointer root sym tl))
+	(update)
+	root)))
+
+(define (add-room-for-symbol! obj sym)
+  (let* ((pro (profile obj))
+	 (symwid (+ (* 3 CELL_SIZE) (text-width sym)))
+	 (offset (xpos pro))
+	 (width (xsize pro)))
+    (slot-set! obj 'profile
+	       (list (+ width (max 0 (- symwid offset)))
+		     (ysize pro)
+		     (+ offset (max 0 (- symwid offset)))
+		     (carpos pro)
+		     (cdrpos pro)))))
+
+;; this is called to view an atom at the top level.  I don't know why
+;; anyone would do this, but its here because atoms are special cases
+;; (though build-tree will work) because '()  has to be treated differently
+
+(define (make-single-atom obj tl)
+  (let ((it (make <viewed-object>
+		  :parent (canvas-of tl)
+		  :tl tl
+		  :coords '(0 0)
+		  :obj obj)))
+    (hash-table-put! (table-of tl) it it)
+    (move-tmci it (atom-offset #f 'cdr))
+    it))
+
+;; this procedure goes through the list of symbols which are on the
+;; canvas and if it finds no equal symbols pointing to obj, it will
+;; place a new one.
+
+(define (find-cell-and-place-symbol sym obj tl)
+  (let ((vobj (hash-table-get (table-of tl) obj)))
+    (let loop ((syms (slot-ref tl 'syms-alist)))
+      (cond ((null? syms)
+	     (make-symbol-pointer vobj sym tl))
+	    ((eq? (caar syms) vobj)
+	     (unless (equal? sym (cadar syms))
+	       (loop (cdr syms))))
+	    (else (loop (cdr syms)))))))
+
+;; this adds a symbol to the display, symbols are kept with toplevel
+;; as a list of lists of the form (root-viewed-object symbol-name
+;; symbol-widget)
+
+(define make-sym-record list)
+(define sym-record-root-widget car)
+(define sym-record-sym-name cadr)
+(define sym-record-sym-widget caddr)
+(define set-sym-record-root-widget! set-car!)
+
+(define (make-symbol-pointer root sym tl)
+  (let* ((coords (coords-of root))
+	 (off (if (viewed-object? root)
+		  (list (+ (-1/2 (text-width (scheme-object-of root)))
+			   CELL_SIZE) 0)
+		  '(0 0)))
+	 (wid (make-viewed-object tl (+ off (list (-1/2 (text-width sym))
+						  (-1/2 MEDIUM_FONT_HEIGHT)))
+				  sym)))
+    (hash-table-put! (table-of tl) wid wid)
+    (add-group-to-tmci-group root wid)
+    (make-simple-pointer root wid "first"
+       (append (+ SYMBOL_OFFSET coords off) off) tl)
+    (bind-for-entrance wid tl (scheme-object-of root))
+    (slot-prepend! tl 'syms-alist (make-sym-record root sym wid))
+    (move-tmci wid (+ (list (* -3 CELL_SIZE) (cadr SYMBOL_OFFSET)) coords))))
+
+(define (find-toplevel)
+  (if *view-root*
+      (if (view-toplevel? *view-root*)
+	  *view-root*
+	  (let ((instance (make <view-toplevel>)))
+	    (toggle-focus instance)
+	    (set! *view-root* instance)
+	    instance))
+      (make <view-toplevel>)))
+
+(provide "view")
+
+)

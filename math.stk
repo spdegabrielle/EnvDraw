@@ -1,0 +1,100 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: math.stk 1.2 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;                          VECTOR MATH
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; these procedures redefine +, -, and * for handling lists and vectors
+;; as well as numbers.  + and - will add and subtract vectors and lists
+;; of the same size, * will do scalar multiplication when called for
+;; (* 5 '(1 2 3)) or (* 5 #(1 2 3)) something
+
+;; THERE IS NO ERROR CHECKING.
+
+(unless (provided? "math")
+
+(define-generic new+)
+
+(let ((+ +))
+  (define-method new+((a <vector>) . b)
+    (let ((l (cons a b))
+	  (al (vector-length a)))
+      (apply vector (map (lambda (x)
+			   (apply + (map (lambda (y) (vector-ref y x)) l)))
+			 (let loop ((n 0))
+			   (if (= n al)
+			       '()
+			       (cons n (loop (+ n 1)))))))))
+  (define-method new+((a <number>) (b <number>))
+    (+ a b))
+  (define-method new+((a <number>) . args)
+    (apply + a args))
+  (define-method new+((a <pair>) . args)
+    (apply map new+ a args))
+  (define-method new+((a <number>))
+    a))
+
+(set! + new+)
+
+(define-generic new-)
+
+(let ((- -))
+  (define-method new-((a <vector>) (b <vector>))
+    (let ((al (vector-length a))
+	  (bl (vector-length b)))
+      (if (= al bl)
+	  (apply vector (map (lambda (x) (- (vector-ref a x)
+					    (vector-ref b x)))
+			     (let loop ((n 0))
+			       (if (= n al)
+				   '()
+				   (cons n (loop (+ n 1)))))))
+	  (error "can't subtract these vectors: ~a ~a\n" a b))))
+  (define-method new-((a <vector>))
+    (apply vector (map - (vector->list a)))) ;; nice and slow
+  (define-method new-((a <number>) (b <number>))
+    (- a b))
+  (define-method new-((a <number>) . args)
+    (apply - a args))
+  (define-method new-((a <pair>) . args)
+    (apply map new- a args))
+  (define-method new-((a <number>))
+    (- a)))
+
+(set! - new-)
+
+(define-generic new*)
+
+(let ((* *))
+  (define-method new*((k <number>) (v <vector>))
+    (let ((l (vector-length v)))
+      (apply vector (map (lambda (x) (* k (vector-ref v x)))
+			 (let loop ((n 0))
+			   (if (= n l)
+			       '()
+			       (cons n (loop (+ n 1)))))))))
+  (define-method new*((a <number>) (b <number>))
+    (* a b))
+  (define-method new*((a <number>) (b <pair>))
+    (map (lambda (x) (* x a)) b))
+  (define-method new* nums (new* (car nums) (apply new* (cdr nums)))))
+
+(set! * new*)
+
+(provide "math")
+
+)

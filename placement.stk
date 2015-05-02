@@ -1,0 +1,643 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: placement.stk 1.2 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+(require "math")
+(require "stacks")
+(require "slib")
+(require 'sort)
+
+(unless (provided? "placement")
+
+;; First a few procedures will be defined for manipulating points.  These
+;; are so that things can be respresented in a convenient form.
+
+(define (make-point x y) (list x y))
+(define-method x-coord((p <pair>)) (car p))
+(define-method y-coord((p <pair>)) (cadr p))
+(define-method x-coord((p <vector>)) (vector-ref p 0))
+(define-method y-coord((p <vector>)) (vector-ref p 1))
+(define-method width-of((v <vector>)) (vector-ref v 2))
+(define-method height-of((v <vector>)) (vector-ref v 3))
+(define-method width-of((v <pair>)) (caddr v))
+(define-method height-of((v <pair>)) (cadddr v))
+(define-method center-of((v <top>))
+  (list (+ (x-coord v) (1/2 (width-of v)))
+	(+ (y-coord v) (1/2 (height-of v)))))
+(define-method coords-of((p <top>))
+  (make-point (x-coord p) (y-coord p)))
+(define-method dimension-of((p <top>))
+  (make-point (width-of p) (height-of p)))
+(define-method set-precise-position((t <top>)) t)
+
+(define (coincident? self p)
+  (and (= (x-coord self) (x-coord p))
+       (= (y-coord self) (y-coord p))))
+
+(define (orthocolinear? p1 p2 p3)
+  (or (= (x-coord p1) (x-coord p2) (x-coord p3))
+      (= (y-coord p1) (y-coord p2) (y-coord p3))))
+
+(define (separation-squared p1 p2)
+  (let ((d (- p1 p2)))
+    (+ (let ((x (x-coord d))) (* x x))
+       (let ((x (y-coord d))) (* x x)))))
+
+(define (magnitude-squared p1)
+  (+ (let ((x (x-coord p1))) (* x x))
+     (let ((x (y-coord p1))) (* x x))))
+
+(define (cross-product a b)
+  (- (* (x-coord a) (y-coord b))
+     (* (x-coord b) (y-coord a))))
+
+(define (counter-clockwise? reference a b)
+  (< 0 (cross-product (- a reference) (- b reference))))
+
+(define (clockwise? reference a b)
+  (not (counter-clockwise? reference a b)))
+
+(define (prefered-point? ver1 ver2)
+  (let* ((ver1y (y-coord ver1))
+	 (ver2y (y-coord ver2)))
+    (if (= ver1y ver2y)
+	(< (x-coord ver1) (x-coord ver2))
+	(< ver1y ver2y))))
+
+(define (parallel-mask point basis)
+  ;; returns a point with the non-zero coordinate of basis zero'd in point
+  (if (= 0 (x-coord basis))
+      (make-point 0 (y-coord point))
+      (make-point (x-coord point) 0)))
+
+(define (ortho-magnitude a) ;; assumes one coord is 0
+  (+ (x-coord a) (y-coord a)))
+
+(define (find-intersection line1-1 line1-2 line2-1 line2-2)
+  ;; all lines will be in one coordinate axis
+  ;; it assumes they are perpendicular.
+  (if (= (x-coord line1-1) (x-coord line1-2))
+      (cond ((ordered? (y-coord line1-1) (y-coord line2-1) (y-coord line1-2))
+	     (make-point (x-coord line1-1) (y-coord line2-1)))
+	    ((ordered? (x-coord line2-1) (x-coord line1-1) (x-coord line2-2))
+	     (make-point (x-coord line1-1) (y-coord line2-1)))
+	    (else #f))
+      (cond ((ordered? (x-coord line1-1) (x-coord line2-1) (x-coord line1-2))
+	     (make-point (x-coord line2-1) (y-coord line1-1)))
+	    ((ordered? (y-coord line2-1) (y-coord line1-1) (y-coord line2-2))
+	     (make-point (x-coord line2-1) (y-coord line1-1)))
+	    (else #f))))
+
+(define (convex-hull-vertex? hull)
+  (counter-clockwise? (dll-data (dll-prev hull))
+		      (dll-data hull)
+		      (dll-data (dll-next hull))))
+
+(define (ordered? n1 n2 n3)
+  (if (>= n1 n2) (>= n2 n3) (<= n2 n3)))
+
+;; these define the spacing between adjacent objects.
+(define PLACEMENT_SPACING (make-point 30 30))
+(define 1/2PLACEMENT_SPACING (* 0.5 PLACEMENT_SPACING))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                      PLACEMENT ALGORITHM
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-class <metropolis> ()
+  ((hull     :getter hull-of)))
+
+;; new metropolis will be constructed at coords with dimension
+(define (make-metropolis coords dimension)
+  (let* ((s (make <metropolis>))
+	 (minx (x-coord coords))
+	 (miny (y-coord coords))
+	 (maxx (+ (x-coord coords) (x-coord dimension)))
+	 (maxy (+ (y-coord coords) (y-coord dimension)))
+	 (ring (make-cdll (make-point minx miny))))
+    (insert-after! ring (make-point minx maxy))
+    (insert-after! ring (make-point maxx maxy))
+    (insert-after! ring (make-point maxx miny))
+    (slot-set! s 'hull ring)
+    s))
+
+;; this is anorth o(n) algorithm, so the whole thing runs in
+;; o(n^2), as each insertion is o(n)
+(define (find-closest-point metro near)
+  (let* ((hull (hull-of metro))
+	 (center (center-of near))
+	 (minval (separation-squared center (dll-data hull)))
+	 (minpnt hull))
+    (let loop ((h (dll-next hull)))
+      (if (eq? h hull)
+	  minpnt
+	  (let ((val (separation-squared center (dll-data h))))
+	    (if (< val minval)
+		(begin (set! minval val)
+		       (set! minpnt h)
+		       (loop (dll-next h)))
+		(loop (dll-next h))))))))
+
+(define (scroll-to-fit-region viewfn fitmin fitmax vismin vismax bmin bmax)
+;; considers the area to fit on the screen, the visible area, and the
+;; bounding box area in one dimension, and calls viewfn with the point
+;; which should be scrolled to the low end (right or top) of the canvas
+;; first condition: the fitted area is completey visible don't move
+;; anything
+  (cond ((and (> fitmin vismin) (< fitmax vismax)) '())
+	;; second condition the whole bounding box will fit into the visible
+	;; area
+	((> (- vismax vismin) (- bmax bmin))
+	 (viewfn (- vismin bmin (x-coord 1/2PLACEMENT_SPACING))))
+	;; otherwise move it to the top left corner of the fit area
+	(else (viewfn (- fitmin vismin))))); fitmin)))))
+
+(define	(scroll-canvas-if-neccesary tl new-coords new)
+  (let* ((dim (dimension-of new))
+	 (vis (get-visible-canvas-region tl))
+	 (can (canvas-of tl))
+	 (bbox (bounding-box can 'all)))
+    (scroll-to-fit-region
+     (lambda (x) (x-view-scroll-units
+		  can (inexact->exact (/ x CANVAS_X_SCROLLINC))))
+     (x-coord new-coords)
+     (+ (x-coord new-coords) (x-coord dim))
+     (x-coord vis)
+     (x-coord (cddr vis))
+     (x-coord bbox)
+     (x-coord (cddr bbox)))
+    (scroll-to-fit-region
+     (lambda (x) (y-view-scroll-units
+		  can (inexact->exact (/ x CANVAS_Y_SCROLLINC))))
+     (y-coord new-coords)
+     (+ (y-coord new-coords) (y-coord dim))
+     (y-coord vis)
+     (y-coord (cddr vis))
+     (y-coord bbox)
+     (y-coord (cddr bbox)))))
+
+
+;; this takes a point p and t and returns the vector going from p away from
+;; t with the magnitude of dimension's coordinate in the same axis.
+(define (outward-parallel p t dimension)
+  (let* ((px (x-coord p))
+	 (py (y-coord p))
+	 (tx (x-coord t))
+	 (ty (y-coord t)))
+    (if (= px tx)
+	(make-point 0 (if (< ty py)
+			  (y-coord dimension)
+			  (- (y-coord dimension))))
+	(make-point (if (< tx px)
+			(x-coord dimension)
+			(- (x-coord dimension)))
+		    0))))
+
+;; given a corner point and an offset, representing the distance to the
+;; other corner, it will return the position at the top-left of the
+;; block, that is the lower y coord and x coord.  because this is the
+;; point used to locate blocks
+(define (upper-left-corner point offset)
+  (let* ((x (x-coord offset))
+	 (y (y-coord offset)))
+    (+ point
+       (if (> 0 x) (make-point x 0) (make-point 0 0))
+       (if (> 0 y) (make-point 0 y) (make-point 0 0)))))
+
+;; smooth-hull is o(corners) algorithm to remove coincident and coliniear
+;; points.  it returns a valid hull point, since the point passed to it
+;; might be removed.
+
+(define MINIMUM_GAP_WIDTH 100)
+
+(define (smooth-hull hull)
+  (let ((hull
+	 (let loop ((stop-at hull)
+		    (position (dll-next hull)))
+	   (cond ((coincident? (dll-data position) (dll-data (dll-prev position)))
+		  (remove-before! position)
+		  (loop (dll-prev position) position))
+		 ((orthocolinear? (dll-data (dll-prev (dll-prev position)))
+				  (dll-data (dll-prev position))
+				  (dll-data position))
+		  (remove-before! position)
+		  (loop (dll-prev position) position))
+		 ((eq? position stop-at) stop-at)
+		 (else (loop stop-at (dll-next position)))))))
+    (let loop ((stop-at hull)
+	       (position (dll-next hull)))
+      (cond ((and (not (convex-hull-vertex? (dll-next position)))
+		  (not (convex-hull-vertex? (dll-next (dll-next position))))
+		  (< (abs (ortho-magnitude (- (dll-data (dll-next (dll-next position)) )
+					      (dll-data (dll-next position)))))
+		     MINIMUM_GAP_WIDTH))
+	     (let ((int (or (find-intersection
+			     (dll-data position)
+			     (dll-data (dll-next position))
+			     (dll-data (dll-next (dll-next (dll-next position))))
+			     (dll-data (dll-next (dll-next (dll-next (dll-next position))))))
+			    (find-intersection
+			     (dll-data (dll-prev position))
+			     (dll-data position)
+			     (dll-data (dll-next (dll-next position)))
+			     (dll-data (dll-next (dll-next (dll-next position))))))))
+	       (remove-after! position)
+	       (remove-after! position)
+	       (insert-after! position int)
+	       (if (orthocolinear? (dll-data (dll-prev position))
+				   (dll-data position)
+				   (dll-data (dll-next position)))
+		   (begin (set! position (dll-prev position))
+			  (remove-after! position))
+		   (remove-after! (dll-next position)))
+	       (loop (dll-prev position) position)))
+	    ((eq? position stop-at) stop-at)
+	    (else (loop stop-at (dll-next position)))))))
+
+
+;; returns the coordinates where a new object can be installed into the
+;; diagram, and inserts the new block into the existing structure.  It
+;; does not place any Tk canvas items.  The algorithm being used is an
+;; incremental algorithm, though not dynamic, thus it will maintain the
+;; diagram for insertions but not deletions.  The idea is to add each
+;; block to the diagram at the closest point to its parent object,
+;; something it should be near, on the perimeter of the current
+;; structure.
+(define (place-new-block metro near dimension)
+  (place-on-corner metro (find-closest-point metro near) near dimension))
+
+(define (place-on-corner metro point-on-hull near dimension)
+  (let ((prevhull (dll-prev point-on-hull))
+	(nexthull (dll-next point-on-hull)))
+    (if (not (convex-hull-vertex? point-on-hull))
+	(place-on-concave-corner metro point-on-hull near dimension)
+	(if (> (separation-squared (dll-data nexthull) (center-of near))
+	       (separation-squared (dll-data prevhull) (center-of near)))
+	    (if (convex-hull-vertex? prevhull)
+		(place-on-convex-corner metro prevhull near dimension)
+		(place-on-concave-corner metro prevhull near dimension))
+	    (if (convex-hull-vertex? nexthull)
+		(place-on-convex-corner metro nexthull near dimension)
+		(place-on-concave-corner metro nexthull near dimension))))))
+
+;;    a convex corner
+
+;;        prev________________corner_______
+;;                            |           |
+;;    only time a block will  |    new    |
+;;    get placed on a convex  |   block   |
+;;    corner is when both     |___________|
+;;    when both adjacent      |
+;;    corners are also convex |next corner
+
+(define (place-on-convex-corner metro point-on-hull near dimension)
+  (let* ((prev-hull (dll-prev point-on-hull))
+	 (next-hull (dll-next point-on-hull))
+	 (next (dll-data next-hull))
+	 (prev (dll-data prev-hull))
+	 (point (dll-data point-on-hull))
+	 (prev-basis (outward-parallel point prev dimension))
+	 (next-basis (outward-parallel point next dimension)))
+;; this code chooses to put it on the closest corner, though I think
+;; it is better to choose the higher y-coordinate (lower screen
+;; coordinate)
+    (if (< (separation-squared (center-of near) next)
+	   (separation-squared (center-of near) prev))
+	;; puts it on the next-side
+	(begin
+	  (insert-after! point-on-hull (+ point (- next-basis)))
+	  (insert-after! point-on-hull (+ point (- next-basis) prev-basis))
+	  (insert-after! point-on-hull (+ point prev-basis))
+	  (slot-set! metro 'hull (smooth-hull prev-hull))
+	  (upper-left-corner point (+ prev-basis (- next-basis))))
+	;; puts it on the prev-side
+	(begin
+	  (insert-after! point-on-hull (+ point next-basis))
+	  (insert-after! point-on-hull (+ point (- prev-basis) next-basis))
+	  (insert-after! point-on-hull (+ point (- prev-basis)))
+	  (slot-set! metro 'hull (smooth-hull prev-hull))
+	  (upper-left-corner point (+ next-basis (- prev-basis)))))))
+
+;;                                    next_______________
+;;                                    |
+;;         ________________ _ _ _ _ _ _ when a block to be inserted does
+;;                        |           | not fit into an indentation like
+;;                        |           | this, the corner and one adjacent
+;;                        |           | corner will be removed and the
+;;                     prev___________corner; intersection will be added as
+;;                                            a new corner and a recursive
+;;                                            call is made.
+
+(define (place-on-concave-corner metro point-on-hull near dimension)
+  (let* ((nexthull (dll-next point-on-hull))
+	 (prevhull (dll-prev point-on-hull))
+	 (next (dll-data nexthull))
+	 (prev (dll-data prevhull))
+	 (point (dll-data point-on-hull))
+	 (next-basis (* -1 (outward-parallel point next dimension)))
+	 (prev-basis (* -1 (outward-parallel point prev dimension))))
+    (if (and (or (convex-hull-vertex? nexthull)
+		 (> (abs (ortho-magnitude (parallel-mask (- next point)
+							 next-basis)))
+		    (abs (ortho-magnitude next-basis))))
+	     (or (convex-hull-vertex? prevhull)
+		 (> (abs (ortho-magnitude (parallel-mask (- prev point)
+							 prev-basis)))
+		    (abs (ortho-magnitude prev-basis)))))
+	(begin
+	  (set-dll-next! prevhull nexthull)
+	  (set-dll-prev! nexthull prevhull)
+	  (insert-after! prevhull (+ point next-basis))
+	  (insert-after! prevhull (+ point prev-basis next-basis))
+	  (insert-after! prevhull (+ point prev-basis))
+	  (slot-set! metro 'hull (smooth-hull prevhull))
+	  (upper-left-corner point (+ next-basis prev-basis)))
+	(let ((nextint (let loop ((hull nexthull))
+			 (if (convex-hull-vertex? hull)
+			     (cons (dll-next hull)
+				   (find-intersection
+				    (dll-data (dll-next hull))
+				    (dll-data hull)
+				    (dll-data (dll-prev (dll-prev hull)))
+				    (dll-data (dll-prev
+				       (dll-prev (dll-prev hull))))))
+			     (loop (dll-next hull)))))
+	      (prevint (let loop ((hull prevhull))
+			 (if (convex-hull-vertex? hull)
+			     (cons (dll-prev hull)
+				   (find-intersection
+				    (dll-data (dll-prev hull))
+				    (dll-data hull)
+				    (dll-data (dll-next (dll-next hull)))
+				    (dll-data (dll-next
+				       (dll-next (dll-next hull))))))
+			     (loop (dll-prev hull))))))
+	  (cond ((cdr prevint)
+		 ;; whichever is true is the new point, so remove three
+		 ;; points, add the new one, and call place-new-block
+		 ;; with the new corner.
+		 (let ((hull (car prevint)))
+		   (remove-after! hull)
+		   (remove-after! hull)
+		   (remove-after! hull)
+		   (insert-after! hull (cdr prevint))
+		   (place-on-corner metro (dll-next hull)
+					    near dimension)))
+		((cdr nextint)
+		 (let ((hull (car nextint)))
+		   (remove-before! hull)
+		   (remove-before! hull)
+		   (remove-before! hull)
+		   (insert-before! hull (cdr nextint))
+		   (place-on-corner metro (dll-prev hull)
+					    near dimension)))
+		(else (error "malformed hull:  internal error")))))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                        DYNAMIC UPDATES
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; The algorithm chosen to update the hull for the placement algorithm
+;; after something on the canvas has moved was chosen with the idea that
+;; the user who moved the object moved the item intelligently and the space
+;; contained by the objects on the canvas will not be left open for new
+;; insertions.  The REGENERATE-HULL procedure takes a toplevel as its argument
+;; and updates the hull of its metropolis data structure.
+
+;; The update begins by sorting a list of segments which correspond to the
+;; front and read ends of some rectangular region on the canvas.  The scan
+;; will be done in the x axis, with segments containing the x coordinate and
+;; the minimum and maximum y values of each segment.  These segments are
+;; sorted by thier x coordinate and passed to CONSTRUCT-CHAIN.
+
+;; The sorting step makes this algorithm O(N lg N) in the number of canvas
+;; items.
+
+(define (make-segment scan-coord min max incr)
+  (vector scan-coord min max incr))
+(define (segment-scan-coordinate x) (vector-ref x 0))
+(define (segment-min-coordinate x) (vector-ref x 1))
+(define (segment-max-coordinate x) (vector-ref x 2))
+(define (segment-type x) (vector-ref x 3))
+
+(define (make-segment-ordering tl except)
+  (sort (apply append
+	       (let loop ((objs (map set-precise-position
+				     (filter (lambda (x)
+					       (not (memq x except)))
+					     (map cdr
+						  (hash-table->list
+						   (table-of tl)))))))
+		 (if (null? objs)
+		     '()
+		     (let* ((o (car objs))
+			    (c (+ (coords-of o)
+				  (- 1/2PLACEMENT_SPACING)
+				  (if (viewed-cell? o)
+				      ;; too much of a hassle to fix this
+				      (list (- CELL_SIZE) 0)
+				      '(0 0))))
+			    (d (+ PLACEMENT_SPACING (dimension-of o)))
+			    (minx (x-coord c))
+			    (maxx (+ minx (x-coord d)))
+			    (miny (y-coord c))
+			    (maxy (+ miny (y-coord d))))
+		       (cons (list (make-segment minx miny maxy 1)
+				   (make-segment maxx miny maxy -1))
+			     (loop (cdr objs)))))))
+	(lambda (x y) (< (vector-ref x 0) (vector-ref y 0)))))
+
+;; FIND-NEXT-INSERTION takes a position in the ordered list of segments
+;; and returns the cell for which the next element in the list has a
+;; higher scan coordinate.  This is used in protecting corners inserted
+;; into the hull where there is no real object, as will be explained
+;; below.
+
+(define (find-next-insertion x)
+  (cond ((null? x) (error "shouldn't happen"))
+	((> (segment-scan-coordinate (cadr x))
+	    (segment-scan-coordinate (car x))) x)
+	(else (find-next-insertion (cdr x)))))
+
+;; CONSTRUCT-CHAIN takes an ordered list of segments and a boolean
+;; PROTECT? which specifies whether the chain being constructed is a
+;; first or second pass.  The procedure does not rely on the increasing
+;; or decreasing order of the list, only that it is one or the other.
+;; However, as the algorithm is described it will become clear why this
+;; flag is used.  The scan keeps track of a minimum and maximum
+;; coordinate for the axis normal to the scan axis, in this case the y
+;; axis.  As the segments are scanned greater max values or smaller min
+;; values will cause new insertions into the hull.
+
+;;                               *-------%
+;;                               |       |
+;;                               3       4
+;;                               |   B   |
+;;                               |       |
+;;                               ---------
+;;                               |       |
+;;                    *----------*       |
+;;                    |        |         |
+;;                    |        |         |
+;;                    1    A   2         |
+;;                    |        |  A,B,C are real objects, D is an intersection
+;;                    |        |         %------%
+;;                    *------------------------*)
+;;                                        | D  |)
+;;                                         - - -)--------%
+;;                                             |         |
+;;                                             |         |
+;;                                             5    C    6
+;;                                             |         |
+;;                                             |         |
+;;                                             *---------%
+
+;; Points which are generated by a left-to-right scan(*).  Note that if a
+;; scan were done in the reverse direction, the point on the south-west
+;; of the area marked D would overlap with the region claimed by the
+;; first scan, so to protect that area another segment is inserted by the
+;; first scan immediately after the x coordinate of the corner at the
+;; north-east corner of D (marked with ")").  It is not neccesary to
+;; protect corner insertions in the second scan, so the PROTECT? flag
+;; disables it, it would only complicate the FIND-NEXT-INSERTION
+;; procedure.  A scan is then done on reverse which yields the points
+;; marked by %'s.  The second scan will produce a chain which is in the
+;; reverse direction, and since the hull must be counter-clockwise for
+;; the other algorithms to work (clockwise on the screen, ignoring the
+;; inverted y axis X and Tk use).  The procedure produces clockwise
+;; chains for scans which are done in increasing x and counterclockwise
+;; for the opposite direction, so the second scan's chain is reversed and
+;; they are connected.  That's all there is to it!
+
+(define (construct-chain ord protect?)
+  (let* ((first (car ord))
+	 (min-half (make-dll
+		    (make-point (segment-scan-coordinate first)
+				(segment-min-coordinate first)) '() '()))
+	 (max-half (make-dll
+		    (make-point (segment-scan-coordinate first)
+				(segment-max-coordinate first)) '() min-half)))
+    (set-dll-prev! min-half max-half)
+    (let loop ((ord (cdr ord))
+	       (scancoord (segment-scan-coordinate first))
+	       (min-half min-half)
+	       (max-half max-half))
+      (unless (null? ord)
+	(let* ((minpos (y-coord (dll-data min-half)))
+	       (maxpos (y-coord (dll-data max-half)))
+	       (this (car ord))
+	       (thiscoord (segment-scan-coordinate this))
+	       (thismin (segment-min-coordinate this))
+	       (thismax (segment-max-coordinate this)))
+	  (let ((new-max-half
+		 (if (> thismax maxpos)
+		     (let ((corner (make-dll (make-point thiscoord maxpos)
+					     '() max-half))
+			   (newmax (make-dll (make-point thiscoord thismax)
+					     '() '())))
+		       (set-dll-prev! max-half corner)
+		       (set-dll-prev! corner newmax)
+		       (set-dll-next! newmax corner)
+		       (if protect?
+			   (let ((next (find-next-insertion ord)))
+			     (set-cdr! next (cons (vector (+ 1 thiscoord)
+							  (- maxpos 1)
+							  thismax)
+						  (cdr next)))))
+		       newmax)
+		     max-half))
+		(new-min-half
+		 (if (< thismin minpos)
+		     (let ((corner (make-dll (make-point thiscoord minpos)
+					     min-half '()))
+			   (newmin (make-dll (make-point thiscoord thismin)
+					     '() '())))
+		       (set-dll-next! min-half corner)
+		       (set-dll-next! corner newmin)
+		       (set-dll-prev! newmin corner)
+		       (if protect?
+			   (let ((next (find-next-insertion ord)))
+			     (set-cdr! next (cons (vector (+ 1 thiscoord)
+							  thismin
+							  (+ minpos 1))
+						  (cdr next)))))
+		       newmin)
+		     min-half)))
+	    (loop (cdr ord) thiscoord new-min-half new-max-half)))))
+    max-half))
+
+(define (regenerate-hull tl except)
+  (let* ((ord (make-segment-ordering tl except))
+	 (right-left (construct-chain ord #t))
+	 (left-right (construct-chain (reverse ord) #f)))
+    (let loop ((dll (dll-farthest-prev left-right)))
+      (let ((next (dll-next dll)))
+	(set-dll-next! dll (dll-prev dll))
+	(set-dll-prev! dll next)
+	(unless (null? next) (loop next))))
+    (let ((rln (dll-farthest-next right-left))
+	  (rlp (dll-farthest-prev right-left))
+	  (lrn (dll-farthest-next left-right))
+	  (lrp (dll-farthest-prev left-right)))
+      (set-dll-next! rln lrp)
+      (set-dll-prev! lrp rln)
+      (set-dll-next! lrn rlp)
+      (set-dll-prev! rlp lrn))
+    (set-cleanflag! (canvas-of tl) #t)
+    (slot-set! (metropolis-of tl) 'hull (smooth-hull right-left))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                    WIDGET PLACEMENT
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define (place-new-widget new tl)
+  (let ((view-toplev? (view-toplevel? tl))
+	(view-widget? (or (viewed-cell? new) (viewed-object? new))))
+    (if (metropolis-of tl)
+	(begin (when (not (cleanflag-of (canvas-of tl)))
+		 (regenerate-hull tl (cons new (child-widgets-of new))))
+	       (let ((new-coords (place-new-block
+				  (metropolis-of tl)
+				  (if view-toplev?
+				      (or *view-last-previous*
+					  VIEW_PLACE_NEAR)
+				      (parent-of new))
+				  (if view-widget?
+				      (+ (make-point (xsize (profile new))
+						     (ysize (profile new)))
+					 PLACEMENT_SPACING)
+				      (+ (dimension-of new)
+					 PLACEMENT_SPACING)))))
+		 (if view-widget?
+		     (begin (move-tmci new (make-point (xpos (profile new)) 0))
+			    (move-tmci new (+ 1/2PLACEMENT_SPACING new-coords)))
+		     (move-single-tmci new (+ 1/2PLACEMENT_SPACING new-coords)))
+		 (scroll-canvas-if-neccesary tl new-coords new)))
+	(begin (slot-set! tl 'metro
+			  (make-metropolis
+			   PLACEMENT_INITIAL_POSITION
+			   (if view-toplev?
+			       (+ (make-point (xsize (profile new))
+					      (ysize (profile new)))
+				  PLACEMENT_SPACING)
+			       (+ (dimension-of new) PLACEMENT_SPACING))))
+	       (if view-toplev?
+		   (move-tmci new (make-point (xpos (profile new)) 0)))
+	       (move-tmci new (+ PLACEMENT_INITIAL_POSITION
+				 1/2PLACEMENT_SPACING))))))
+
+(provide "placement")
+
+)

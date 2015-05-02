@@ -1,0 +1,122 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: simple-pointer.stk 1.2 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+(unless (provided? "simple-pointer")
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                         SIMPLE POINTERS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-class <simple-pointer> ()
+  ((child      :init-keyword :child :getter child-of)
+   (parent     :init-keyword :parent :getter parent-of)
+   (pwid       :init-keyword :pwid)
+   (fill       :allocation :virtual
+	       :slot-ref (lambda (o) (slot-ref (slot-ref o 'pwid) 'fill))
+	       :slot-set! (lambda (o w)
+			    (slot-set! (slot-ref o 'pwid) 'fill w)))
+   (width      :allocation :virtual
+	       :slot-ref (lambda (o) (slot-ref (slot-ref o 'pwid) 'width))
+	       :slot-set! (lambda (o w)
+			    (slot-set! (slot-ref o 'pwid) 'width w)))
+   (coords     :allocation :virtual
+	       :slot-ref (lambda (o) (slot-ref (slot-ref o 'pwid) 'coords))
+	       :slot-set! (lambda (o w)
+			    (slot-set! (slot-ref o 'pwid) 'coords w)))))
+
+(define-method color-of((self <simple-pointer>))
+  (darken-color (color-of (parent-of self))))
+
+(define (make-simple-pointer parent child arrow-head coords tl)
+  (let* ((pwid (make <line>
+		     :arrow arrow-head
+		     :parent (canvas-of parent)
+		     :fill (asHex (darken-color (color-of tl)))
+		     :width POINTER_WIDTH
+		     :coords coords))
+	 (self (make <simple-pointer>
+		     :child child
+		     :parent parent
+		     :pwid pwid)))
+    (slot-prepend! parent 'pointers (cons 'simple self))
+    (slot-prepend! child 'ptrs2me self)
+    (add-motion-hook child self)
+    (add-prev-motion-hook parent self)
+    (add-to-tmci-group parent pwid)
+    (add-group-to-tmci-group parent child)))
+
+;; utilities
+
+(define (thicken-pointer! w)
+  (slot-set! w 'width POINTER_WIDTH))
+
+(define (thin-pointer! w)
+  (slot-set! w 'width GCD_POINTER_WIDTH))
+
+(define (remove-if-cdr-eq l o)
+  (cond ((null? l) '())
+	((eq? (cdar l) o) (cdr l))
+	(else (cons (car l) (remove-if-cdr-eq (cdr l) o)))))
+
+(define-method delete-object((self <simple-pointer>) ht)
+  (let ((parent (parent-of self))
+	(child (child-of self)))
+    (delete-object parent ht)
+    (delete-object child ht)
+    (slot-set! parent 'pointers (remove-if-cdr-eq (pointers-of parent) self))
+    (slot-remove! child 'ptrs2me self)
+    (slot-set! parent 'par-wid-fns
+	       (remove-if-cdr-eq (slot-ref parent 'par-wid-fns) self))
+    (slot-set! child 'par-wid-fns
+	       (remove-if-cdr-eq (slot-ref child 'par-wid-fns) self))
+    (safe-destroy (slot-ref self 'pwid))))
+
+(define (add-motion-hook tmci pointer)
+  (slot-prepend! tmci 'par-wid-fns
+		 (cons (pointer-motion-hook pointer) pointer)))
+
+(define (add-prev-motion-hook tmci pointer)
+  (slot-prepend! tmci 'par-wid-fns
+		 (cons (prev-pointer-motion-hook pointer) pointer)))
+
+(define-method coords-of((self <simple-pointer>))
+  (slot-ref (slot-ref self 'pwid) 'coords))
+
+(define-method pointer-motion-hook((pointer <simple-pointer>))
+  (lambda (already-moved dx dy)
+    (unless (memq (slot-ref pointer 'parent) already-moved)
+      (simple-move-head pointer dx dy))))
+
+(define-method prev-pointer-motion-hook((pointer <simple-pointer>))
+  ;; only difference from above is the minus signs, here we are
+  ;; correcting for a pointer that moved, whereas above it
+  ;; was for a pointer that hadn't already moved
+  (lambda (already-moved dx dy)
+    (unless (memq (slot-ref pointer 'child) already-moved)
+      (simple-move-head pointer (- dx) (- dy)))))
+
+(define (simple-move-head pointer dx dy)
+  (let* ((old-coords (slot-ref pointer 'coords))
+	 (tail (first-two old-coords))
+	 (head (+ (list dx dy) (last-two old-coords))))
+    (slot-set! pointer 'coords (append tail head))))
+
+(define (move-head pointer dx dy)
+  ((pointer-motion-hook pointer) '() dx dy))
+
+(provide "simple-pointer")
+
+)

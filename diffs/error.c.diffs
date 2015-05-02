@@ -1,0 +1,14 @@
+*** Src/error.c.orig	Wed Apr 26 15:34:11 1995
+--- Src/error.c	Sun Sep  3 02:43:57 1995
+***************
+*** 35,40 ****
+--- 35,43 ----
+    static int err_counter=0; /* to avoid loops when REPORT_ERROR proc is buggy */
+    char head[MAX_PATH_LENGTH+50];
+  
++   STk_set_symbol_value("*last-error-message*", STk_makestring(message));
++   STk_set_symbol_value("*last-error-arg*", x);
++ 
+    err_counter += 1;
+    if (!(Error_context & ERR_IGNORED)) {
+      /* Error is not ignored: A message must be printed */

@@ -1,0 +1,367 @@
+;; -*-Mode: Scheme;-*-
+;;
+;; Copyright (C) 1995, 1996 Josh MacDonald <jmacd@CS.Berkeley.EDU>
+;;
+;; Permission to use, copy, and/or distribute this software and its
+;; documentation for any purpose and without fee is hereby granted, provided
+;; that both the above copyright notice and this permission notice appear in
+;; all copies and derived works.  Fees for distribution or use of this
+;; software or derived works may only be charged with express written
+;; permission of the copyright holder.
+;; This software is provided ``as is'' without express or implied warranty.
+;;
+;; $Id: env-pointers.stk 1.2 Sun, 15 Sep 1996 18:08:31 -0700 jmacd $
+;; $ProjectHeader: envdraw 0.4 Sun, 15 Sep 1996 18:18:18 -0700 jmacd $
+;;
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;                            POINTERS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(require "simple-pointer")
+
+(unless (provided? "env-pointers")
+
+(define-class <env-pointer> (<simple-pointer>)
+  ((headoff    :initform '(0 0))
+   (tailoff    :initform '(0 0))))
+
+(define-method pointer-motion-hook((pointer <env-pointer>))
+  (lambda (already-moved dx dy)
+    (unless (memq (parent-of pointer) already-moved)
+      (env-move-head pointer dx dy))))
+
+(define-method prev-pointer-motion-hook((pointer <env-pointer>))
+  (lambda (already-moved dx dy)
+    (unless (memq (child-of pointer) already-moved)
+      (env-move-head pointer (- dx) (- dy)))))
+
+(define (env-move-head pointer dx dy)
+  (let* ((old-coords (coords-of pointer))
+	 (tail (- (first-two old-coords)
+		  (slot-ref pointer 'tailoff)))
+	 (head (+ (list dx dy)
+		  (- (slot-ref pointer 'headoff))
+		  (last-two old-coords)))
+	 (parent (parent-of pointer))
+	 (child (child-of pointer))
+	 (new-coords
+	  (find-env-pointer
+	   (list (car head) (+ (car head) (slot-ref child 'width)))
+	   (list (cadr head) (+ (cadr head) (slot-ref child 'height)))
+	   (list (car tail) (+ (car tail) (slot-ref parent 'width)))
+	   (list (cadr tail) (+ (cadr tail) (slot-ref parent 'height))))))
+    (slot-set! pointer 'headoff (- (last-two new-coords) head))
+    (slot-set! pointer 'tailoff (- (first-two new-coords) tail))
+    (slot-set! pointer 'coords new-coords)))
+
+(define (find-env-pointer r1x r1y r2x r2y)
+  ;; The algorithm used to determine a pointer between two rectangles:
+  ;; each axis has four points defined by the edges of each rectangle,
+  ;; merging these and extracting the median two points tells whether
+  ;; the rectangles overlap on a given axis or not.  If the overlap on
+  ;; only one axis, then a straight pointer can be used, this is extracted
+  ;; from the median two points.  if there are no overlaps, then the
+  ;; closest two corners determine the pointer's path, if the rectangles
+  ;; overlap in both axes then try a few other things.
+  (let* ((x-ordering (env-merge r1x r2x))
+	 (y-ordering (env-merge r1y r2y))
+	 (x-overlap? (check-overlap x-ordering))
+	 (y-overlap? (check-overlap y-ordering)))
+    (cond ((and x-overlap? (not y-overlap?))
+	   (find-straight-x-pointer x-ordering y-ordering))
+	  ((and y-overlap? (not x-overlap?))
+	   (find-straight-y-pointer y-ordering x-ordering))
+	  ((not (and y-overlap? x-overlap?))
+	   (find-bent-pointer x-ordering y-ordering))
+	  (else
+	   (list (car r2x) (car r2y) (car r1x) (car r1y))))))
+
+(define (env-merge one two)
+  (cond ((and (null? one) (null? two)) '())
+        ((null? one) (cons (cons (car two) 2) (env-merge one (cdr two))))
+        ((null? two) (cons (cons (car one) 1) (env-merge (cdr one) two)))
+        ((< (car one) (car two))
+         (cons (cons (car one) 1) (env-merge (cdr one) two)))
+        (else
+         (cons (cons (car two) 2) (env-merge one (cdr two))))))
+
+(define (check-overlap ordering)
+  (or (= (cdar ordering) (cdar (cddr ordering)))    ;; overlap
+      (= (cdar ordering) (cdar (cdddr ordering))))) ;; one is inside another
+
+(define (find-straight-x-pointer normal-order parallel-order)
+  ;; This function and the one below are basically the same except they
+  ;; need to know which basis they are building a pointer in.
+  (let ((normal-coord (1/2 (+ (caadr normal-order) (caaddr normal-order)))))
+    (if (= 2 (cdadr parallel-order))	;; if lower-coord is the head
+	(list normal-coord (caar (cdr parallel-order))
+	      normal-coord (caar (cddr parallel-order)))
+	(list normal-coord (caar (cddr parallel-order))
+	      normal-coord (caar (cdr parallel-order))))))
+
+(define (find-straight-y-pointer normal-order parallel-order)
+  (let ((normal-coord (1/2 (+ (caadr normal-order) (caaddr normal-order)))))
+    (if (= 2 (cdadr parallel-order))
+	(list (caar (cdr parallel-order)) normal-coord
+	      (caar (cddr parallel-order)) normal-coord)
+	(list (caar (cddr parallel-order)) normal-coord
+	      (caar (cdr parallel-order)) normal-coord))))
+
+(define (find-bent-pointer x-order y-order)
+  ;; Find the closest corners and connect the closest sides
+  (let* ((x-diff (- (caar (cdr x-order)) (caar (cddr x-order))))
+	 (y-diff (- (caar (cdr y-order)) (caar (cddr y-order))))
+	 (head-x-lower (= 1 (cdar x-order)))
+	 (head-y-lower (= 1 (cdar y-order)))
+	 (x-basis (if head-x-lower (- BENT_POINTER_OFFSET)
+		      BENT_POINTER_OFFSET))
+	 (y-basis (if head-y-lower (- BENT_POINTER_OFFSET)
+		      BENT_POINTER_OFFSET))
+	 (tail-x (if head-x-lower (caar (cddr x-order)) (caar (cdr x-order))))
+	 (tail-y (if head-y-lower (caar (cddr y-order)) (caar (cdr y-order))))
+	 (head-x (if head-x-lower (caar (cdr x-order)) (caar (cddr x-order))))
+	 (head-y (if head-y-lower (caar (cdr y-order)) (caar (cddr y-order)))))
+    (if (> (abs y-diff) (abs x-diff)) ;; this is ... confusing
+	(list tail-x             (- tail-y y-basis)
+	      (+ head-x x-basis) (- tail-y y-basis)
+	      (+ head-x x-basis)  head-y)
+	(list (- tail-x x-basis) tail-y
+	      (- tail-x x-basis) (+ head-y y-basis)
+	      head-x             (+ head-y y-basis)))))
+
+(define-class <to-proc-pointer> (<simple-pointer>)
+  (textoff
+   (spacing    :initform (+ 5 (random 25)))
+   (headoff    :initform '(0 0))
+   (tailoff    :initform '(0 0))))
+
+(define-method pointer-motion-hook((pointer <to-proc-pointer>))
+  (lambda (already-moved dx dy)
+    (unless (memq (parent-of pointer) already-moved)
+      (to-proc-move-head pointer dx dy))))
+
+(define-method prev-pointer-motion-hook((pointer <to-proc-pointer>))
+  (lambda (already-moved dx dy)
+    (unless (memq (child-of pointer) already-moved)
+      (to-proc-move-head pointer (- dx) (- dy)))))
+
+(define (to-proc-move-head pointer dx dy)
+  (let* ((old-coords (coords-of pointer))
+	 (tail (- (first-two old-coords)
+		  (slot-ref pointer 'tailoff)))
+	 (head (+ (list dx dy)
+		  (- (slot-ref pointer 'headoff))
+		  (last-two old-coords)))
+	 (new-coords (to-proc-find-pointer tail head
+			 (slot-ref pointer 'textoff)
+			 (height-of (parent-of pointer))
+			 (width-of (parent-of pointer))
+			 (slot-ref pointer 'spacing))))
+    (slot-set! pointer 'headoff (- (last-two new-coords) head))
+    (slot-set! pointer 'tailoff (- (first-two new-coords) tail))
+    (slot-set! pointer 'coords new-coords)))
+
+;; here head is the location of the top-left corner of the frame from which
+;; the pointer originates, textoff is the location of the right hand edge
+;; of the symbol text, and head is the top middle of the rectangle
+;; enclosing the procedure.
+
+(define (to-proc-find-pointer tail head textoff height width spacing)
+  (let ((end-of-tail
+	 (find-off-frame-tail tail head textoff height width spacing)))
+    (append end-of-tail
+	    (find-procedure-head (last-two end-of-tail) head))))
+
+(define (find-off-frame-tail tail head textoff height width spacing)
+  (let ((go-right? (> (car head) (+ (car tail) (1/2 width))))
+	(go-up? (< (+ (* 2 PROCEDURE_DIAMETER) (cadr head)) (cadr tail)))
+	(go-down? (> (cadr head) (+ (cadr tail) height))))
+    (append (if go-right?
+		(append (+ tail textoff)
+			(+ tail (list (+ width spacing) (cadr textoff))))
+		(append (+ tail (list 3 (cadr textoff)))
+			(+ tail (list (- spacing) (cadr textoff)))))
+	    (cond (go-up?
+		   (if go-right?
+		       (+ tail (list (+ width spacing) (- spacing)))
+		       (+ tail (list (- spacing) (- spacing)))))
+		  (go-down?
+		   (if go-right?
+		       (+ tail (list (+ spacing width) (+ height spacing)))
+		       (+ tail (list (- spacing) (+ spacing height)))))
+		  (else '())))))
+
+(define (find-procedure-head from head)
+  (if (> (cadr from) (+ (cadr head) PROCEDURE_RADIUS))
+      ;; going up
+      (let ((diff (- (car head) (car from))))
+	(cond ((> diff PROCEDURE_DIAMETER)
+	       ;; going right
+	       (list (car from) (+ (cadr head) PROCEDURE_RADIUS)
+		     (- (car head) PROCEDURE_DIAMETER)
+		     (+ (cadr head) PROCEDURE_RADIUS)))
+	      ((< diff (- PROCEDURE_DIAMETER))
+	       ;; going left
+	       (list (car from) (+ (cadr head) PROCEDURE_RADIUS)
+		     (+ (car head) PROCEDURE_DIAMETER)
+		     (+ (cadr head) PROCEDURE_RADIUS)))
+
+	      ((> diff 0)
+	       (append (list (- (car head) (* 2 PROCEDURE_DIAMETER))
+			     (cadr from))
+		       (+ head (list (* -2 PROCEDURE_DIAMETER)
+				     PROCEDURE_RADIUS))
+		       (+ head (list (- PROCEDURE_DIAMETER)
+				     PROCEDURE_RADIUS))))
+	      (else
+	       (append (list (+ (car head) (* 2 PROCEDURE_DIAMETER))
+			     (cadr from))
+		       (+ head (list (* 2 PROCEDURE_DIAMETER)
+				     PROCEDURE_RADIUS))
+		       (+ head (list PROCEDURE_DIAMETER
+				     PROCEDURE_RADIUS))))))
+      ;; going down
+      (if (> (car from) (car head))
+	  ;; going left
+	  (+ head (list PROCEDURE_RADIUS 0))
+	  ;; going right
+	  (+ head (list (- PROCEDURE_RADIUS) 0)))))
+
+(define-class <from-proc-pointer> (<simple-pointer>)
+  ((headoff    :initform '(0 0))))
+
+(define-method pointer-motion-hook((pointer <from-proc-pointer>))
+  (lambda (already-moved dx dy)
+    (unless (memq (parent-of pointer) already-moved)
+      (from-proc-move-head pointer dx dy))))
+
+(define-method prev-pointer-motion-hook((pointer <from-proc-pointer>))
+  (lambda (already-moved dx dy)
+    (unless (memq (child-of pointer) already-moved)
+      (from-proc-move-head pointer (- dx) (- dy)))))
+
+(define (from-proc-move-head pointer dx dy)
+  (let* ((old-coords (coords-of pointer))
+	 (tail (first-two old-coords))
+	 (head (+ (list dx dy)
+		  (- (slot-ref pointer 'headoff))
+		  (last-two old-coords)))
+	 (new-coords (from-proc-find-pointer tail head
+			 (height-of (child-of pointer))
+			 (width-of (child-of pointer)))))
+    (slot-set! pointer 'headoff (- (last-two new-coords) head))
+    (slot-set! pointer 'coords new-coords)))
+
+(define (from-proc-find-pointer tail head height width)
+  (append tail
+	  (- tail (list 0 PROCEDURE_DIAMETER))
+	  (let* ((x (car tail))
+		 (y (- (cadr tail) PROCEDURE_DIAMETER))
+		 (minx (car head))
+		 (maxx (+ minx width))
+		 (miny (cadr head))
+		 (maxy (+ (cadr head) height)))
+	    (cond ((< y miny)
+		   (cond ((< x minx)
+			  ;; shoot right
+			  (append (list (max (+ minx BENT_POINTER_OFFSET)
+					     (+ x PROCEDURE_DIAMETER))
+					y)
+				  (+ head (list (max BENT_POINTER_OFFSET
+						     (+ PROCEDURE_DIAMETER
+							(- x minx)))
+						0))))
+			 ((> x (+ maxx (* 1.5 PROCEDURE_DIAMETER)))
+			  ;; shoot left
+			  (append (list (- maxx BENT_POINTER_OFFSET) y)
+				  (+ head (list (- width BENT_POINTER_OFFSET)
+						0))))
+			 ((< x (- maxx (* 1.5 PROCEDURE_DIAMETER)))
+			  (append (list (+ x PROCEDURE_DIAMETER) y)
+				  (list (+ x PROCEDURE_DIAMETER) miny)))
+			 (else
+			  (append (list (- x (* 2 PROCEDURE_DIAMETER)) y)
+				  (list (- x (* 2 PROCEDURE_DIAMETER))miny)))))
+		  ((< y (- maxy BENT_POINTER_OFFSET))
+		   (if (< x minx)
+		       (list minx y)
+		       (list maxx y)))
+		  ((< x minx)
+		   (append (list x (- maxy BENT_POINTER_OFFSET))
+			   (list minx (- maxy BENT_POINTER_OFFSET))))
+		  ((> x maxx)
+		   (append (list x (- maxy BENT_POINTER_OFFSET))
+			   (list maxx (- maxy BENT_POINTER_OFFSET))))
+		  (else
+		   (list x maxy))))))
+
+(define-class <to-view-pointer> (<simple-pointer>)
+  (textoff
+   (spacing    :initform (+ 5 (random 25)))
+   (headoff    :initform '(0 0))
+   (tailoff    :initform '(0 0))))
+
+(define-method pointer-motion-hook((pointer <to-view-pointer>))
+  (lambda (already-moved dx dy)
+    (unless (memq (parent-of pointer) already-moved)
+      (to-view-move-head pointer dx dy))))
+
+(define-method prev-pointer-motion-hook((pointer <to-view-pointer>))
+  (lambda (already-moved dx dy)
+    (unless (memq (child-of pointer) already-moved)
+      (to-view-move-head pointer (- dx) (- dy)))))
+
+(define (to-view-move-head pointer dx dy)
+  (let* ((old-coords (coords-of pointer))
+	 (tail (- (first-two old-coords)
+		  (slot-ref pointer 'tailoff)))
+	 (head (+ (list dx dy)
+		  (- (slot-ref pointer 'headoff))
+		  (last-two old-coords)))
+	 (new-coords (to-view-find-pointer tail head
+			 (slot-ref pointer 'textoff)
+			 (slot-ref (parent-of pointer) 'height)
+			 (slot-ref (parent-of pointer) 'width)
+			 (slot-ref pointer 'spacing))))
+    (slot-set! pointer 'headoff (- (last-two new-coords) head))
+    (slot-set! pointer 'tailoff (- (first-two new-coords) tail))
+    (slot-set! pointer 'coords new-coords)))
+
+(define (to-view-find-pointer tail head textoff height width spacing)
+  (let ((end-of-tail
+	 (find-off-frame-tail tail head textoff height width spacing)))
+    (append end-of-tail
+	    (find-view-head (last-two end-of-tail) head))))
+
+(define (find-view-head from head)
+  (find-cell-pointer from head 0 (if (> (car head) (car from)) 'cdr 'car)))
+
+(define-class <cell-to-proc-pointer> (<simple-pointer>)
+  ((type       :allocation :virtual
+	       :slot-set! (lambda (o w) #f)
+	       :slot-ref (lambda (w) 'already-posted))
+   (curroff    :initform '(0 0))))
+
+(define-method pointer-motion-hook((pointer <cell-to-proc-pointer>))
+  (lambda (already-moved dx dy)
+    (unless (memq (parent-of pointer) already-moved)
+      (cell-to-proc-move-head pointer dx dy))))
+
+(define-method prev-pointer-motion-hook((pointer <cell-to-proc-pointer>))
+  (lambda (already-moved dx dy)
+    (unless (memq (child-of pointer) already-moved)
+      (cell-to-proc-move-head pointer (- dx) (- dy)))))
+
+(define (cell-to-proc-move-head pointer dx dy)
+  (let* ((old-coords (coords-of pointer))
+	 (tail (first-two old-coords))
+	 (head (+ (list dx dy) (- (slot-ref pointer 'curroff))
+		  (last-two old-coords)))
+	 (new-coords (append tail (find-procedure-head tail head))))
+    (slot-set! pointer 'curroff (- (last-two new-coords) head))
+    (slot-set! pointer 'coords new-coords)))
+
+(provide "env-pointers")
+
+)
